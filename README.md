@@ -34,6 +34,24 @@ Run the CLI during development with:
 cargo run -- --help
 ```
 
+## Release Binaries
+
+Pushing a tag that starts with `v` publishes release binaries automatically on GitHub Releases.
+
+Example:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Each release includes `tar.gz` archives for:
+
+- macOS `arm64`
+- macOS `x86_64`
+- Linux `arm64`
+- Linux `x86_64`
+
 ## Configuration
 
 The default config path is:
