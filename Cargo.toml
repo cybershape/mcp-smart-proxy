@@ -1,0 +1,13 @@
+[package]
+name = "mcp-smart-proxy"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+aisdk = { version = "0.5.2", features = ["openai"] }
+clap = { version = "4.5.38", features = ["derive", "env"] }
+rmcp = { version = "0.16.0", features = ["client", "server", "transport-child-process", "transport-io"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+tokio = { version = "1.44.2", features = ["macros", "rt-multi-thread"] }
+toml = "0.8.20"
