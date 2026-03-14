@@ -20,10 +20,9 @@ use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use tokio::sync::Mutex;
 use toml::{Table, Value};
 
-use crate::{
-    CachedTools, ConfiguredServer, ToolSnapshot, cache_file_path_from_home, configured_server,
-    home_dir, load_config_table, sanitize_name,
-};
+use crate::config::{configured_server, load_config_table};
+use crate::paths::{cache_file_path_from_home, home_dir, sanitize_name};
+use crate::types::{CachedTools, ConfiguredServer, ToolSnapshot};
 
 const ACTIVATE_TOOLSET_NAME: &str = "activate_toolset";
 const CALL_TOOL_IN_TOOLSET_NAME: &str = "call_tool_in_toolset";

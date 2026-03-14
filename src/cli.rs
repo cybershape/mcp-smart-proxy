@@ -1,0 +1,48 @@
+use std::path::PathBuf;
+
+use clap::{Parser, Subcommand};
+
+pub const DEFAULT_CONFIG_PATH: &str = "~/.config/mcp-smart-proxy/config.toml";
+
+#[derive(Debug, Parser)]
+#[command(version, about = "A smart MCP proxy")]
+pub struct Cli {
+    /// Override the config file path.
+    #[arg(long, value_name = "PATH", default_value = DEFAULT_CONFIG_PATH)]
+    pub config: PathBuf,
+
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Add a stdio MCP server to the config file.
+    Add {
+        name: String,
+        #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
+    /// Refresh cached tool metadata for a configured MCP server.
+    Reload { name: String },
+    /// Start a stdio MCP server that exposes cached toolset activation.
+    Mcp,
+    /// Update application configuration.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigCommand {
+    /// Update OpenAI settings.
+    Openai {
+        #[arg(long)]
+        baseurl: Option<String>,
+        #[arg(long)]
+        key: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+    },
+}
