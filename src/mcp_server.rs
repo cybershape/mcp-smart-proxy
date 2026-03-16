@@ -27,8 +27,8 @@ use crate::console::{
 use crate::paths::{cache_file_path_from_home, home_dir, sanitize_name};
 use crate::types::{CachedTools, ConfiguredServer, ToolSnapshot};
 
-const ACTIVATE_TOOLSET_NAME: &str = "activate_toolset";
-const CALL_TOOL_IN_TOOLSET_NAME: &str = "call_tool_in_toolset";
+const ACTIVATE_EXTERNAL_MCP_NAME: &str = "activate_external_mcp";
+const CALL_TOOL_IN_EXTERNAL_MCP_NAME: &str = "call_tool_in_external_mcp";
 
 #[derive(Debug, Clone)]
 struct CachedToolsetRecord {
@@ -39,13 +39,13 @@ struct CachedToolsetRecord {
 }
 
 #[derive(Debug, Deserialize)]
-struct ActivateToolsetRequest {
-    name: String,
+struct ActivateExternalMcpRequest {
+    external_mcp_name: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct CallToolInToolsetRequest {
-    toolset_name: String,
+struct CallToolInExternalMcpRequest {
+    external_mcp_name: String,
     tool_name: String,
     args_in_json: String,
 }
@@ -121,10 +121,10 @@ fn load_cached_toolsets_from_home(
 }
 
 fn build_activate_tool_description(toolsets: &[CachedToolsetRecord]) -> String {
-    let mut lines = vec!["available toolset:".to_string(), String::new()];
+    let mut lines = vec!["available external MCP servers:".to_string(), String::new()];
     if toolsets.is_empty() {
         lines.push(
-            "- none: no cached toolsets available yet; run `mcp-smart-proxy reload <name>` first."
+            "- none: no cached external MCP servers available yet; run `mcp-smart-proxy reload <name>` first."
                 .to_string(),
         );
         return lines.join("\n");
@@ -139,17 +139,17 @@ fn build_activate_tool_description(toolsets: &[CachedToolsetRecord]) -> String {
 
 fn activate_tool_definition(toolsets: &[CachedToolsetRecord]) -> Tool {
     Tool::new(
-        ACTIVATE_TOOLSET_NAME,
+        ACTIVATE_EXTERNAL_MCP_NAME,
         build_activate_tool_description(toolsets),
         object(json!({
             "type": "object",
             "properties": {
-                "name": {
+                "external_mcp_name": {
                     "type": "string",
-                    "description": "The toolset name to activate."
+                    "description": "The external MCP server name to activate."
                 }
             },
-            "required": ["name"],
+            "required": ["external_mcp_name"],
             "additionalProperties": false
         })),
     )
@@ -162,27 +162,27 @@ fn activate_tool_definition(toolsets: &[CachedToolsetRecord]) -> Tool {
     )
 }
 
-fn call_tool_in_toolset_definition() -> Tool {
+fn call_tool_in_external_mcp_definition() -> Tool {
     Tool::new(
-        CALL_TOOL_IN_TOOLSET_NAME,
-        "Call a specific tool inside a toolset",
+        CALL_TOOL_IN_EXTERNAL_MCP_NAME,
+        "Call a specific tool exposed by an external MCP server",
         object(json!({
             "type": "object",
             "properties": {
-                "toolset_name": {
+                "external_mcp_name": {
                     "type": "string",
-                    "description": "The toolset name."
+                    "description": "The external MCP server name."
                 },
                 "tool_name": {
                     "type": "string",
-                    "description": "The tool name exposed by that toolset."
+                    "description": "The tool name exposed by that external MCP server."
                 },
                 "args_in_json": {
                     "type": "string",
-                    "description": "A JSON object string containing the downstream tool arguments, follow the JSON schema, for example {}."
+                    "description": "A JSON object string containing the external MCP tool arguments, follow the JSON schema, for example {}."
                 }
             },
-            "required": ["toolset_name", "tool_name", "args_in_json"],
+            "required": ["external_mcp_name", "tool_name", "args_in_json"],
             "additionalProperties": false
         })),
     )
@@ -278,7 +278,7 @@ async fn connect_toolset_client(
 
 struct SmartProxyMcpServer {
     activate_tool: Tool,
-    call_tool_in_toolset: Tool,
+    call_tool_in_external_mcp: Tool,
     toolsets: Vec<CachedToolsetRecord>,
     clients: Mutex<HashMap<String, Arc<RunningService<RoleClient, ()>>>>,
 }
@@ -286,10 +286,10 @@ struct SmartProxyMcpServer {
 impl SmartProxyMcpServer {
     fn new(toolsets: Vec<CachedToolsetRecord>) -> Self {
         let activate_tool = activate_tool_definition(&toolsets);
-        let call_tool_in_toolset = call_tool_in_toolset_definition();
+        let call_tool_in_external_mcp = call_tool_in_external_mcp_definition();
         Self {
             activate_tool,
-            call_tool_in_toolset,
+            call_tool_in_external_mcp,
             toolsets,
             clients: Mutex::new(HashMap::new()),
         }
@@ -318,7 +318,7 @@ impl ServerHandler for SmartProxyMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             instructions: Some(
-                "Use `activate_toolset` to inspect cached tools, then `call_tool_in_toolset` to invoke a specific downstream MCP tool."
+                "Use `activate_external_mcp` to inspect cached tools, then `call_tool_in_external_mcp` to invoke a specific downstream MCP tool."
                     .into(),
             ),
             capabilities: ServerCapabilities::builder().enable_tools().build(),
@@ -334,7 +334,7 @@ impl ServerHandler for SmartProxyMcpServer {
         std::future::ready(Ok(ListToolsResult {
             tools: vec![
                 self.activate_tool.clone(),
-                self.call_tool_in_toolset.clone(),
+                self.call_tool_in_external_mcp.clone(),
             ],
             ..Default::default()
         }))
@@ -342,8 +342,8 @@ impl ServerHandler for SmartProxyMcpServer {
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
         match name {
-            ACTIVATE_TOOLSET_NAME => Some(self.activate_tool.clone()),
-            CALL_TOOL_IN_TOOLSET_NAME => Some(self.call_tool_in_toolset.clone()),
+            ACTIVATE_EXTERNAL_MCP_NAME => Some(self.activate_tool.clone()),
+            CALL_TOOL_IN_EXTERNAL_MCP_NAME => Some(self.call_tool_in_external_mcp.clone()),
             _ => None,
         }
     }
@@ -359,20 +359,22 @@ impl ServerHandler for SmartProxyMcpServer {
                 .ok_or_else(|| McpError::invalid_params("tool arguments are required", None))?;
 
             match request.name.as_ref() {
-                ACTIVATE_TOOLSET_NAME => {
-                    let params: ActivateToolsetRequest =
+                ACTIVATE_EXTERNAL_MCP_NAME => {
+                    let params: ActivateExternalMcpRequest =
                         serde_json::from_value(JsonValue::Object(arguments)).map_err(|error| {
                             McpError::invalid_params(
-                                format!("invalid activate_toolset arguments: {error}"),
+                                format!("invalid activate_external_mcp arguments: {error}"),
                                 None,
                             )
                         })?;
 
-                    let Some(toolset) = resolve_toolset_name(&self.toolsets, &params.name) else {
+                    let Some(toolset) =
+                        resolve_toolset_name(&self.toolsets, &params.external_mcp_name)
+                    else {
                         return Err(McpError::invalid_params(
-                            format!("unknown toolset `{}`", params.name),
+                            format!("unknown external MCP server `{}`", params.external_mcp_name),
                             Some(json!({
-                                "available_toolsets": self
+                                "available_external_mcps": self
                                     .toolsets
                                     .iter()
                                     .map(|toolset| toolset.name.clone())
@@ -383,21 +385,22 @@ impl ServerHandler for SmartProxyMcpServer {
 
                     Ok(build_activate_tool_result(toolset))
                 }
-                CALL_TOOL_IN_TOOLSET_NAME => {
-                    let params: CallToolInToolsetRequest =
+                CALL_TOOL_IN_EXTERNAL_MCP_NAME => {
+                    let params: CallToolInExternalMcpRequest =
                         serde_json::from_value(JsonValue::Object(arguments)).map_err(|error| {
                             McpError::invalid_params(
-                                format!("invalid call_tool_in_toolset arguments: {error}"),
+                                format!("invalid call_tool_in_external_mcp arguments: {error}"),
                                 None,
                             )
                         })?;
 
-                    let Some(toolset) = resolve_toolset_name(&self.toolsets, &params.toolset_name)
+                    let Some(toolset) =
+                        resolve_toolset_name(&self.toolsets, &params.external_mcp_name)
                     else {
                         return Err(McpError::invalid_params(
-                            format!("unknown toolset `{}`", params.toolset_name),
+                            format!("unknown external MCP server `{}`", params.external_mcp_name),
                             Some(json!({
-                                "available_toolsets": self
+                                "available_external_mcps": self
                                     .toolsets
                                     .iter()
                                     .map(|toolset| toolset.name.clone())
@@ -455,7 +458,7 @@ mod tests {
 
         assert_eq!(
             build_activate_tool_description(&toolsets),
-            "available toolset:\n\n- alpha: Use this when you need Alpha workflows.\n- beta: Use this for Beta tasks."
+            "available external MCP servers:\n\n- alpha: Use this when you need Alpha workflows.\n- beta: Use this for Beta tasks."
         );
     }
 
@@ -591,14 +594,14 @@ mod tests {
 
     #[test]
     fn call_tool_definition_contains_expected_fields() {
-        let tool = call_tool_in_toolset_definition();
+        let tool = call_tool_in_external_mcp_definition();
         let properties = tool
             .input_schema
             .get("properties")
             .and_then(JsonValue::as_object)
             .unwrap();
 
-        assert!(properties.contains_key("toolset_name"));
+        assert!(properties.contains_key("external_mcp_name"));
         assert!(properties.contains_key("tool_name"));
         assert!(properties.contains_key("args_in_json"));
     }

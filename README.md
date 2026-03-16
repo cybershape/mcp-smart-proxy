@@ -13,8 +13,8 @@ It does two things:
 
 The proxy server currently exposes two tools:
 
-- `activate_toolset`: returns the cached tool list for a named toolset.
-- `call_tool_in_toolset`: calls one downstream tool by toolset name and tool name.
+- `activate_external_mcp`: returns the cached tool list for a named external MCP server.
+- `call_tool_in_external_mcp`: calls one downstream tool by external MCP server name and tool name.
 
 This lets another AI inspect cached toolsets first, then call only the downstream tool it needs.
 
@@ -286,13 +286,13 @@ msp mcp
 
 ## Proxy Tool Contract
 
-### `activate_toolset`
+### `activate_external_mcp`
 
 Input:
 
 ```json
 {
-  "name": "github"
+  "external_mcp_name": "github"
 }
 ```
 
@@ -311,13 +311,13 @@ Output:
 }
 ```
 
-### `call_tool_in_toolset`
+### `call_tool_in_external_mcp`
 
 Input:
 
 ```json
 {
-  "toolset_name": "github",
+  "external_mcp_name": "github",
   "tool_name": "example_tool",
   "args_in_json": "{\"owner\":\"octo-org\",\"repo\":\"demo\"}"
 }
