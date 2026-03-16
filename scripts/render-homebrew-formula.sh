@@ -2,21 +2,22 @@
 
 set -euo pipefail
 
-if [[ $# -ne 6 ]]; then
-  echo "usage: $0 <version> <asset-prefix> <macos-arm64-sha256> <macos-x86_64-sha256> <linux-arm64-sha256> <linux-x86_64-sha256>" >&2
+if [[ $# -ne 7 ]]; then
+  echo "usage: $0 <output-path> <version> <asset-prefix> <macos-arm64-sha256> <macos-x86_64-sha256> <linux-arm64-sha256> <linux-x86_64-sha256>" >&2
   exit 1
 fi
 
-version="$1"
-asset_prefix="$2"
-macos_arm64_sha256="$3"
-macos_x86_64_sha256="$4"
-linux_arm64_sha256="$5"
-linux_x86_64_sha256="$6"
+output_path="$1"
+version="$2"
+asset_prefix="$3"
+macos_arm64_sha256="$4"
+macos_x86_64_sha256="$5"
+linux_arm64_sha256="$6"
+linux_x86_64_sha256="$7"
 
-mkdir -p Formula
+mkdir -p "$(dirname "${output_path}")"
 
-cat > Formula/msp.rb <<EOF
+cat > "${output_path}" <<EOF
 class Msp < Formula
   desc "Smart proxy for multiple stdio MCP servers"
   homepage "https://github.com/tiejunhu/mcp-smart-proxy"
@@ -46,11 +47,15 @@ class Msp < Formula
     binary = Dir["msp", "*/msp", "mcp-smart-proxy", "*/mcp-smart-proxy"].first
     raise "msp binary not found in archive" unless binary
 
-    readme = Dir["README.md", "*/README.md"].first
-    raise "README.md not found in archive" unless readme
-
     bin.install binary => "msp"
-    prefix.install_metafiles readme
+
+    metafiles_dir = Dir["README.md", "LICENSE*", "COPYING*", "*/README.md", "*/LICENSE*", "*/COPYING*"].empty? ? nil : Dir["*", "."].find do |entry|
+      next false unless File.directory?(entry)
+
+      Dir[File.join(entry, "README.md"), File.join(entry, "LICENSE*"), File.join(entry, "COPYING*")].any?
+    end
+
+    prefix.install_metafiles(metafiles_dir || ".")
   end
 
   test do
