@@ -57,8 +57,9 @@ cargo run -- --help
 
 - Application success output uses `=== MSP APP EVENT BEGIN ===` and `=== MSP APP EVENT END ===`.
 - Application failure output uses `=== MSP APP ERROR BEGIN ===` and `=== MSP APP ERROR END ===`.
-- External command stderr is tagged with `[MSP][EXTERNAL][<stage>][<label>]...`.
-- External command blocks include the stage, command line, stream, and raw content.
+- Successful external commands stay silent.
+- Failed external commands emit `=== MSP EXTERNAL COMMAND BEGIN ===` and `=== MSP EXTERNAL COMMAND END ===`.
+- External output blocks are printed only for failures and include the stage, command line, stream, and raw content captured from the external process.
 
 Example success output:
 
@@ -74,6 +75,22 @@ message: Reloaded MCP server `github` into /Users/example/.cache/mcp-smart-proxy
 Example failure output:
 
 ```text
+=== MSP EXTERNAL COMMAND BEGIN ===
+kind: external-command
+stage: reload.fetch_tools
+label: github
+command: npx -y @modelcontextprotocol/server-github
+status: list-tools-failed
+=== MSP EXTERNAL COMMAND END ===
+=== MSP EXTERNAL OUTPUT BEGIN ===
+kind: external-command
+stage: reload.fetch_tools
+label: github
+command: npx -y @modelcontextprotocol/server-github
+stream: stderr
+content:
+GitHub token is missing
+=== MSP EXTERNAL OUTPUT END ===
 === MSP APP ERROR BEGIN ===
 kind: app
 level: error

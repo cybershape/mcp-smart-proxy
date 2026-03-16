@@ -17,8 +17,9 @@ use tokio::io::AsyncWriteExt;
 
 use crate::config::{configured_server, load_config_table, load_default_model_provider_config};
 use crate::console::{
-    describe_command, message_error, operation_error, print_external_command_end,
-    print_external_command_start, print_external_output_block, spawn_stderr_logger,
+    ExternalOutputCapture, ExternalOutputRouter, describe_command, message_error, operation_error,
+    print_external_command_failure, print_external_output_block, print_external_output_if_present,
+    spawn_stderr_collector,
 };
 use crate::paths::{cache_file_path, unix_epoch_ms};
 use crate::types::{
@@ -101,7 +102,8 @@ async fn fetch_tools(
     server: &ConfiguredServer,
 ) -> Result<Vec<Tool>, Box<dyn Error>> {
     let command_line = describe_command(&server.command, &server.args);
-    print_external_command_start("reload.fetch_tools", server_name, &command_line);
+    let stderr_router = ExternalOutputRouter::new();
+    let stderr_capture = stderr_router.start_capture().await;
     let (transport, stderr) = TokioChildProcess::builder(
         tokio::process::Command::new(&server.command).configure(|cmd| {
             cmd.args(&server.args);
@@ -118,35 +120,69 @@ async fn fetch_tools(
     })?;
 
     if let Some(stderr) = stderr {
-        spawn_stderr_logger(
+        spawn_stderr_collector(
             "reload.fetch_tools".to_string(),
             server_name.to_string(),
             command_line.clone(),
             stderr,
+            stderr_router.clone(),
         );
     }
 
-    let client = ().serve(transport).await.map_err(|error| {
-        operation_error(
-            "reload.fetch_tools.connect",
-            format!("failed to initialize an MCP client against external command `{command_line}`"),
-            Box::new(error),
+    let client = match ().serve(transport).await {
+        Ok(client) => client,
+        Err(error) => {
+            print_external_command_failure_async(
+                "reload.fetch_tools",
+                server_name,
+                &command_line,
+                "connect-failed",
+                stderr_capture,
+            )
+            .await;
+            return Err(operation_error(
+                "reload.fetch_tools.connect",
+                format!(
+                    "failed to initialize an MCP client against external command `{command_line}`"
+                ),
+                Box::new(error),
+            ));
+        }
+    };
+    let tools = match client.list_all_tools().await {
+        Ok(tools) => tools,
+        Err(error) => {
+            print_external_command_failure_async(
+                "reload.fetch_tools",
+                server_name,
+                &command_line,
+                "list-tools-failed",
+                stderr_capture,
+            )
+            .await;
+            return Err(operation_error(
+                "reload.fetch_tools.list_tools",
+                format!("failed to list tools from external command `{command_line}`"),
+                Box::new(error),
+            ));
+        }
+    };
+    if let Err(error) = client.cancel().await {
+        print_external_command_failure_async(
+            "reload.fetch_tools",
+            server_name,
+            &command_line,
+            "shutdown-failed",
+            stderr_capture,
         )
-    })?;
-    let tools = client.list_all_tools().await.map_err(|error| {
-        operation_error(
-            "reload.fetch_tools.list_tools",
-            format!("failed to list tools from external command `{command_line}`"),
-            Box::new(error),
-        )
-    })?;
-    client.cancel().await.map_err(|error| {
-        operation_error(
+        .await;
+        return Err(operation_error(
             "reload.fetch_tools.shutdown",
             format!("failed to shut down MCP client for `{command_line}`"),
             Box::new(error),
-        )
-    })?;
+        ));
+    }
+    let _ = stderr_capture.finish().await;
     Ok(tools)
 }
 
@@ -268,7 +304,6 @@ async fn summarize_tools_with_codex(
         "-".to_string(),
     ];
     let command_line = describe_command("codex", &command_args);
-    print_external_command_start("reload.summarize_tools.codex", "codex", &command_line);
 
     let mut child = tokio::process::Command::new("codex");
     child
@@ -301,26 +336,32 @@ async fn summarize_tools_with_codex(
     drop(stdin);
 
     let output = child.wait_with_output().await.map_err(|error| {
+        print_external_command_failure(
+            "reload.summarize_tools.codex",
+            "codex",
+            &command_line,
+            "wait-failed",
+        );
         operation_error(
             "reload.summarize_tools.codex.wait",
             format!("failed while waiting for external command `{command_line}`"),
             Box::new(error),
         )
     })?;
-    print_external_output_block(
-        "reload.summarize_tools.codex",
-        "codex",
-        &command_line,
-        "stderr",
-        &String::from_utf8_lossy(&output.stderr),
-    );
-    print_external_command_end(
-        "reload.summarize_tools.codex",
-        "codex",
-        &command_line,
-        output.status,
-    );
     if !output.status.success() {
+        print_external_command_failure(
+            "reload.summarize_tools.codex",
+            "codex",
+            &command_line,
+            &output.status.to_string(),
+        );
+        print_external_output_block(
+            "reload.summarize_tools.codex",
+            "codex",
+            &command_line,
+            "stderr",
+            &String::from_utf8_lossy(&output.stderr),
+        );
         let _ = fs::remove_file(&output_path);
         let _ = fs::remove_dir(&workdir);
         return Err(message_error(
@@ -346,6 +387,18 @@ async fn summarize_tools_with_codex(
     let _ = fs::remove_file(&output_path);
     let _ = fs::remove_dir(&workdir);
     non_empty_summary(Some(output.as_str()), "Codex returned an empty summary")
+}
+
+async fn print_external_command_failure_async(
+    stage: &str,
+    label: &str,
+    command_line: &str,
+    status: &str,
+    stderr_capture: ExternalOutputCapture,
+) {
+    print_external_command_failure(stage, label, command_line, status);
+    let content = stderr_capture.finish().await;
+    print_external_output_if_present(stage, label, command_line, "stderr", &content).await;
 }
 
 fn codex_output_path() -> Result<PathBuf, Box<dyn Error>> {

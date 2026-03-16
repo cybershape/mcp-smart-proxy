@@ -1,18 +1,80 @@
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
-use std::process::ExitStatus;
+use std::sync::Arc;
 
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::ChildStderr,
+    sync::Mutex,
 };
 
 const APP_EVENT_BEGIN: &str = "=== MSP APP EVENT BEGIN ===";
 const APP_EVENT_END: &str = "=== MSP APP EVENT END ===";
 const APP_ERROR_BEGIN: &str = "=== MSP APP ERROR BEGIN ===";
 const APP_ERROR_END: &str = "=== MSP APP ERROR END ===";
+const EXTERNAL_COMMAND_BEGIN: &str = "=== MSP EXTERNAL COMMAND BEGIN ===";
+const EXTERNAL_COMMAND_END: &str = "=== MSP EXTERNAL COMMAND END ===";
 const EXTERNAL_OUTPUT_BEGIN: &str = "=== MSP EXTERNAL OUTPUT BEGIN ===";
 const EXTERNAL_OUTPUT_END: &str = "=== MSP EXTERNAL OUTPUT END ===";
+const MAX_EXTERNAL_OUTPUT_LINES: usize = 1000;
+
+#[derive(Debug, Default)]
+struct ExternalCaptureState {
+    next_id: u64,
+    captures: Vec<(u64, Vec<String>)>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ExternalOutputRouter {
+    state: Arc<Mutex<ExternalCaptureState>>,
+}
+
+pub struct ExternalOutputCapture {
+    router: ExternalOutputRouter,
+    id: u64,
+}
+
+impl ExternalOutputRouter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub async fn start_capture(&self) -> ExternalOutputCapture {
+        let mut state = self.state.lock().await;
+        let id = state.next_id;
+        state.next_id += 1;
+        state.captures.push((id, Vec::new()));
+        ExternalOutputCapture {
+            router: self.clone(),
+            id,
+        }
+    }
+
+    pub async fn push(&self, line: String) {
+        let mut state = self.state.lock().await;
+        for (_, lines) in &mut state.captures {
+            if lines.len() >= MAX_EXTERNAL_OUTPUT_LINES {
+                lines.remove(0);
+            }
+            lines.push(line.clone());
+        }
+    }
+}
+
+impl ExternalOutputCapture {
+    pub async fn finish(self) -> String {
+        let mut state = self.router.state.lock().await;
+        let Some(index) = state
+            .captures
+            .iter()
+            .position(|(capture_id, _)| *capture_id == self.id)
+        else {
+            return String::new();
+        };
+        let (_, lines) = state.captures.swap_remove(index);
+        lines.join("\n")
+    }
+}
 
 #[derive(Debug)]
 pub struct OperationError {
@@ -102,17 +164,14 @@ pub fn describe_command(command: &str, args: &[String]) -> String {
     rendered.join(" ")
 }
 
-pub fn print_external_command_start(stage: &str, label: &str, command_line: &str) {
-    eprintln!("[MSP][EXTERNAL][{stage}][{label}][start] command={command_line}");
-}
-
-pub fn print_external_command_end(
-    stage: &str,
-    label: &str,
-    command_line: &str,
-    status: ExitStatus,
-) {
-    eprintln!("[MSP][EXTERNAL][{stage}][{label}][end] status={status} command={command_line}");
+pub fn print_external_command_failure(stage: &str, label: &str, command_line: &str, status: &str) {
+    eprintln!("{EXTERNAL_COMMAND_BEGIN}");
+    eprintln!("kind: external-command");
+    eprintln!("stage: {stage}");
+    eprintln!("label: {label}");
+    eprintln!("command: {command_line}");
+    eprintln!("status: {status}");
+    eprintln!("{EXTERNAL_COMMAND_END}");
 }
 
 pub fn print_external_output_block(
@@ -140,29 +199,42 @@ pub fn print_external_output_block(
     eprintln!("{EXTERNAL_OUTPUT_END}");
 }
 
-pub fn spawn_stderr_logger(
+pub fn spawn_stderr_collector(
     stage: String,
     label: String,
     command_line: String,
     stderr: ChildStderr,
+    output: ExternalOutputRouter,
 ) {
     tokio::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
         loop {
             match lines.next_line().await {
                 Ok(Some(line)) => {
-                    eprintln!("[MSP][EXTERNAL][{stage}][{label}][stderr] {line}");
+                    output.push(line).await;
                 }
                 Ok(None) => break,
                 Err(error) => {
-                    eprintln!(
-                        "[MSP][EXTERNAL][{stage}][{label}][stderr-read-error] command={command_line} error={error}"
-                    );
+                    output
+                        .push(format!(
+                            "[stderr-read-error][stage={stage}][label={label}] command={command_line} error={error}"
+                        ))
+                        .await;
                     break;
                 }
             }
         }
     });
+}
+
+pub async fn print_external_output_if_present(
+    stage: &str,
+    label: &str,
+    command_line: &str,
+    stream: &str,
+    content: &str,
+) {
+    print_external_output_block(stage, label, command_line, stream, content);
 }
 
 fn deepest_operation_error<'a>(mut error: &'a (dyn Error + 'static)) -> Option<&'a OperationError> {
