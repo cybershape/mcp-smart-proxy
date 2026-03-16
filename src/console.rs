@@ -8,10 +8,6 @@ use tokio::{
     sync::Mutex,
 };
 
-const APP_EVENT_BEGIN: &str = "=== MSP APP EVENT BEGIN ===";
-const APP_EVENT_END: &str = "=== MSP APP EVENT END ===";
-const APP_ERROR_BEGIN: &str = "=== MSP APP ERROR BEGIN ===";
-const APP_ERROR_END: &str = "=== MSP APP ERROR END ===";
 const EXTERNAL_COMMAND_BEGIN: &str = "=== MSP EXTERNAL COMMAND BEGIN ===";
 const EXTERNAL_COMMAND_END: &str = "=== MSP EXTERNAL COMMAND END ===";
 const EXTERNAL_OUTPUT_BEGIN: &str = "=== MSP EXTERNAL OUTPUT BEGIN ===";
@@ -130,12 +126,7 @@ pub fn message_error(stage: &'static str, summary: impl Into<String>) -> Box<dyn
 }
 
 pub fn print_app_event(stage: &str, message: impl AsRef<str>) {
-    println!("{APP_EVENT_BEGIN}");
-    println!("kind: app");
-    println!("level: info");
-    println!("stage: {stage}");
-    println!("message: {}", message.as_ref());
-    println!("{APP_EVENT_END}");
+    println!("{}", format_app_event_line(stage, message.as_ref()));
 }
 
 pub fn print_app_error(error: &(dyn Error + 'static)) {
@@ -145,16 +136,10 @@ pub fn print_app_error(error: &(dyn Error + 'static)) {
         .map(|item| item.summary().to_string())
         .unwrap_or_else(|| error.to_string());
 
-    eprintln!("{APP_ERROR_BEGIN}");
-    eprintln!("kind: app");
-    eprintln!("level: error");
-    eprintln!("stage: {stage}");
-    eprintln!("summary: {summary}");
-    eprintln!("error_chain:");
-    for item in error_chain(error) {
-        eprintln!("- {item}");
-    }
-    eprintln!("{APP_ERROR_END}");
+    eprintln!(
+        "{}",
+        format_app_error_line(stage, &summary, &error_chain(error))
+    );
 }
 
 pub fn describe_command(command: &str, args: &[String]) -> String {
@@ -260,6 +245,47 @@ fn error_chain(error: &(dyn Error + 'static)) -> Vec<String> {
     items
 }
 
+fn format_app_event_line(stage: &str, message: &str) -> String {
+    format!(
+        "[app][info][{}] {}",
+        render_inline_value(stage),
+        render_inline_value(message)
+    )
+}
+
+fn format_app_error_line(stage: &str, summary: &str, chain: &[String]) -> String {
+    let mut line = format!(
+        "[app][error][{}] {}",
+        render_inline_value(stage),
+        render_inline_value(summary)
+    );
+
+    if !chain.is_empty() {
+        let rendered_chain = chain
+            .iter()
+            .map(|item| render_inline_value(item))
+            .collect::<Vec<_>>()
+            .join(" <- ");
+        line.push_str(" | chain: ");
+        line.push_str(&rendered_chain);
+    }
+
+    line
+}
+
+fn render_inline_value(value: &str) -> String {
+    let mut rendered = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\n' => rendered.push_str("\\n"),
+            '\r' => rendered.push_str("\\r"),
+            '\t' => rendered.push_str("\\t"),
+            _ => rendered.push(ch),
+        }
+    }
+    rendered
+}
+
 fn render_token(value: &str) -> String {
     if value.chars().all(|ch| {
         ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '/' | '.' | ':' | '=' | '@')
@@ -290,6 +316,39 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "reload.fetch_tools: failed to list tools"
+        );
+    }
+
+    #[test]
+    fn formats_app_event_as_single_line() {
+        assert_eq!(
+            format_app_event_line("cli.config.codex", "Updated config"),
+            "[app][info][cli.config.codex] Updated config"
+        );
+    }
+
+    #[test]
+    fn escapes_control_characters_in_app_logs() {
+        assert_eq!(
+            format_app_event_line("cli.test", "line 1\nline 2\tvalue"),
+            "[app][info][cli.test] line 1\\nline 2\\tvalue"
+        );
+    }
+
+    #[test]
+    fn formats_app_error_as_single_line_with_chain() {
+        let line = format_app_error_line(
+            "reload.fetch_tools.list_tools",
+            "failed to list tools",
+            &[
+                "cli.reload: failed to reload MCP server `github`".into(),
+                "reload.fetch_tools: failed to fetch tools from MCP server `github`".into(),
+            ],
+        );
+
+        assert_eq!(
+            line,
+            "[app][error][reload.fetch_tools.list_tools] failed to list tools | chain: cli.reload: failed to reload MCP server `github` <- reload.fetch_tools: failed to fetch tools from MCP server `github`"
         );
     }
 }
