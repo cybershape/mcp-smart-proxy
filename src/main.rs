@@ -90,7 +90,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 print_app_event(
                     "cli.list.server",
                     format!(
-                        "{} -> {} | last_updated: {}",
+                        "`{}`: {} (last updated: {})",
                         server.name, command_line, last_updated
                     ),
                 );
@@ -160,7 +160,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
                             )
                         })?;
                 imported_servers.push(format!(
-                    "{server_name} -> {}",
+                    "Imported `{server_name}` and cached tools at {}",
                     reload_result.cache_path.display()
                 ));
                 config = load_config_table(&config_path).map_err(|error| {
@@ -175,38 +175,27 @@ async fn run() -> Result<(), Box<dyn Error>> {
             print_app_event(
                 "cli.import.codex",
                 format!(
-                    "Imported {} MCP server(s) from {} into {}{}{}",
+                    "Imported {} MCP server(s) from {} into {}",
                     imported_servers.len(),
                     codex_config_path.display(),
-                    config_path.display(),
-                    if imported_servers.is_empty() {
-                        "".to_string()
-                    } else {
-                        format!(": {}", imported_servers.join(", "))
-                    },
-                    if skipped_existing_servers.is_empty()
-                        && import_plan.skipped_self_servers.is_empty()
-                    {
-                        "".to_string()
-                    } else {
-                        let mut skipped_parts = Vec::new();
-                        if !skipped_existing_servers.is_empty() {
-                            skipped_parts.push(format!(
-                                "existing server(s): {}",
-                                skipped_existing_servers.join(", ")
-                            ));
-                        }
-                        if !import_plan.skipped_self_servers.is_empty() {
-                            skipped_parts.push(format!(
-                                "self-referential server(s): {}",
-                                import_plan.skipped_self_servers.join(", ")
-                            ));
-                        }
-
-                        format!("; skipped {}", skipped_parts.join("; "))
-                    }
+                    config_path.display()
                 ),
             );
+            for message in imported_servers {
+                print_app_event("cli.import.codex.server", message);
+            }
+            for name in skipped_existing_servers {
+                print_app_event(
+                    "cli.import.codex.skipped",
+                    format!("Skipped existing server `{name}`"),
+                );
+            }
+            for name in import_plan.skipped_self_servers {
+                print_app_event(
+                    "cli.import.codex.skipped",
+                    format!("Skipped self-referential server `{name}`"),
+                );
+            }
         }
         Some(Command::Remove { name }) => {
             let removed = remove_server(&config_path, &name).map_err(|error| {
@@ -229,7 +218,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
             print_app_event(
                 "cli.remove",
                 format!(
-                    "Removed MCP server `{}` from {}; {}",
+                    "Removed MCP server `{}` from {}; cache: {}",
                     removed.name,
                     config_path.display(),
                     cache_message
@@ -248,12 +237,12 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 "cli.reload",
                 if reload_result.updated {
                     format!(
-                        "Reloaded MCP server `{name}` into {}",
+                        "Reloaded MCP server `{name}`. Cache file: {}",
                         reload_result.cache_path.display()
                     )
                 } else {
                     format!(
-                        "Skipped cache update for MCP server `{name}` because the fetched tools matched {}",
+                        "Skipped cache update for MCP server `{name}` because fetched tools matched {}",
                         reload_result.cache_path.display()
                     )
                 },
@@ -291,12 +280,12 @@ async fn run() -> Result<(), Box<dyn Error>> {
                                 )
                             })?;
                     let status = if reload_result.updated {
-                        "updated"
+                        "cache updated"
                     } else {
-                        "unchanged"
+                        "cache unchanged"
                     };
                     results.push(format!(
-                        "{server_name} -> {} ({status})",
+                        "`{server_name}`: {status} at {}",
                         reload_result.cache_path.display()
                     ));
                 }
@@ -304,12 +293,14 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 print_app_event(
                     "cli.reload",
                     format!(
-                        "Reloaded {} MCP server(s) from {}: {}",
+                        "Reloaded {} MCP server(s) from {}",
                         results.len(),
-                        config_path.display(),
-                        results.join(", ")
+                        config_path.display()
                     ),
                 );
+                for result in results {
+                    print_app_event("cli.reload.server", result);
+                }
             }
         }
         Some(Command::Mcp) => {

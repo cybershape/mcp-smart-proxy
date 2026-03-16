@@ -8,8 +8,10 @@ use tokio::{
     sync::Mutex,
 };
 
-const EXTERNAL_COMMAND_BEGIN: &str = "=== MSP EXTERNAL COMMAND BEGIN ===";
-const EXTERNAL_COMMAND_END: &str = "=== MSP EXTERNAL COMMAND END ===";
+const APP_ERROR_BEGIN: &str = "=== MSP ERROR BEGIN ===";
+const APP_ERROR_END: &str = "=== MSP ERROR END ===";
+const EXTERNAL_COMMAND_BEGIN: &str = "=== MSP EXTERNAL COMMAND FAILURE BEGIN ===";
+const EXTERNAL_COMMAND_END: &str = "=== MSP EXTERNAL COMMAND FAILURE END ===";
 const EXTERNAL_OUTPUT_BEGIN: &str = "=== MSP EXTERNAL OUTPUT BEGIN ===";
 const EXTERNAL_OUTPUT_END: &str = "=== MSP EXTERNAL OUTPUT END ===";
 const MAX_EXTERNAL_OUTPUT_LINES: usize = 1000;
@@ -151,9 +153,8 @@ pub fn describe_command(command: &str, args: &[String]) -> String {
 
 pub fn print_external_command_failure(stage: &str, label: &str, command_line: &str, status: &str) {
     eprintln!("{EXTERNAL_COMMAND_BEGIN}");
-    eprintln!("kind: external-command");
     eprintln!("stage: {stage}");
-    eprintln!("label: {label}");
+    eprintln!("target: {label}");
     eprintln!("command: {command_line}");
     eprintln!("status: {status}");
     eprintln!("{EXTERNAL_COMMAND_END}");
@@ -172,15 +173,15 @@ pub fn print_external_output_block(
     }
 
     eprintln!("{EXTERNAL_OUTPUT_BEGIN}");
-    eprintln!("kind: external-command");
     eprintln!("stage: {stage}");
-    eprintln!("label: {label}");
+    eprintln!("target: {label}");
     eprintln!("command: {command_line}");
     eprintln!("stream: {stream}");
-    eprintln!("content:");
+    eprintln!("----- {stream} begin -----");
     for line in trimmed.lines() {
         eprintln!("{line}");
     }
+    eprintln!("----- {stream} end -----");
     eprintln!("{EXTERNAL_OUTPUT_END}");
 }
 
@@ -202,7 +203,7 @@ pub fn spawn_stderr_collector(
                 Err(error) => {
                     output
                         .push(format!(
-                            "[stderr-read-error][stage={stage}][label={label}] command={command_line} error={error}"
+                            "stderr read error (stage={stage}, target={label}, command={command_line}): {error}"
                         ))
                         .await;
                     break;
@@ -247,30 +248,31 @@ fn error_chain(error: &(dyn Error + 'static)) -> Vec<String> {
 
 fn format_app_event_line(stage: &str, message: &str) -> String {
     format!(
-        "[app][info][{}] {}",
+        "[MSP][INFO][{}] {}",
         render_inline_value(stage),
         render_inline_value(message)
     )
 }
 
 fn format_app_error_line(stage: &str, summary: &str, chain: &[String]) -> String {
-    let mut line = format!(
-        "[app][error][{}] {}",
-        render_inline_value(stage),
-        render_inline_value(summary)
-    );
+    let mut lines = vec![
+        APP_ERROR_BEGIN.to_string(),
+        format!("stage: {}", render_inline_value(stage)),
+        format!("summary: {}", render_inline_value(summary)),
+    ];
 
     if !chain.is_empty() {
-        let rendered_chain = chain
-            .iter()
-            .map(|item| render_inline_value(item))
-            .collect::<Vec<_>>()
-            .join(" <- ");
-        line.push_str(" | chain: ");
-        line.push_str(&rendered_chain);
+        lines.push("causes:".to_string());
+        lines.extend(
+            chain
+                .iter()
+                .enumerate()
+                .map(|(index, item)| format!("  {}. {}", index + 1, render_inline_value(item))),
+        );
     }
 
-    line
+    lines.push(APP_ERROR_END.to_string());
+    lines.join("\n")
 }
 
 fn render_inline_value(value: &str) -> String {
@@ -323,7 +325,7 @@ mod tests {
     fn formats_app_event_as_single_line() {
         assert_eq!(
             format_app_event_line("cli.config.codex", "Updated config"),
-            "[app][info][cli.config.codex] Updated config"
+            "[MSP][INFO][cli.config.codex] Updated config"
         );
     }
 
@@ -331,12 +333,12 @@ mod tests {
     fn escapes_control_characters_in_app_logs() {
         assert_eq!(
             format_app_event_line("cli.test", "line 1\nline 2\tvalue"),
-            "[app][info][cli.test] line 1\\nline 2\\tvalue"
+            "[MSP][INFO][cli.test] line 1\\nline 2\\tvalue"
         );
     }
 
     #[test]
-    fn formats_app_error_as_single_line_with_chain() {
+    fn formats_app_error_as_block_with_chain() {
         let line = format_app_error_line(
             "reload.fetch_tools.list_tools",
             "failed to list tools",
@@ -348,7 +350,7 @@ mod tests {
 
         assert_eq!(
             line,
-            "[app][error][reload.fetch_tools.list_tools] failed to list tools | chain: cli.reload: failed to reload MCP server `github` <- reload.fetch_tools: failed to fetch tools from MCP server `github`"
+            "=== MSP ERROR BEGIN ===\nstage: reload.fetch_tools.list_tools\nsummary: failed to list tools\ncauses:\n  1. cli.reload: failed to reload MCP server `github`\n  2. reload.fetch_tools: failed to fetch tools from MCP server `github`\n=== MSP ERROR END ==="
         );
     }
 }

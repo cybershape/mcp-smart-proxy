@@ -54,40 +54,46 @@ cargo run -- --help
 
 ## Console Output
 
-`msp` writes structured console output so another AI or operator can distinguish application events from external command output.
+`msp` writes structured console output so another AI or operator can distinguish application events from external command output without making humans read raw log blobs.
 
-- Application success output is a single line in the form `[app][info][stage] message`.
-- Application failure output is a single line in the form `[app][error][stage] summary | chain: ...`.
+- Application success output is a single line in the form `[MSP][INFO][stage] message`.
+- Application failure output is printed as a short error block with the stage, summary, and numbered causes.
 - Successful external commands stay silent.
-- Failed external commands emit `=== MSP EXTERNAL COMMAND BEGIN ===` and `=== MSP EXTERNAL COMMAND END ===`.
-- External output blocks are printed only for failures and include the stage, command line, stream, and raw content captured from the external process.
+- Failed external commands emit `=== MSP EXTERNAL COMMAND FAILURE BEGIN ===` and `=== MSP EXTERNAL COMMAND FAILURE END ===`.
+- External output blocks are printed only for failures and include the stage, target, command line, stream, and fenced stream content markers.
 
 Example success output:
 
 ```text
-[app][info][cli.reload] Reloaded MCP server `github` into /Users/example/.cache/mcp-smart-proxy/github.json
+[MSP][INFO][cli.reload] Reloaded MCP server `github`. Cache file: /Users/example/.cache/mcp-smart-proxy/github.json
 ```
 
 Example failure output:
 
 ```text
-=== MSP EXTERNAL COMMAND BEGIN ===
-kind: external-command
+=== MSP EXTERNAL COMMAND FAILURE BEGIN ===
 stage: reload.fetch_tools
-label: github
+target: github
 command: npx -y @modelcontextprotocol/server-github
 status: list-tools-failed
-=== MSP EXTERNAL COMMAND END ===
+=== MSP EXTERNAL COMMAND FAILURE END ===
 === MSP EXTERNAL OUTPUT BEGIN ===
-kind: external-command
 stage: reload.fetch_tools
-label: github
+target: github
 command: npx -y @modelcontextprotocol/server-github
 stream: stderr
-content:
+----- stderr begin -----
 GitHub token is missing
+----- stderr end -----
 === MSP EXTERNAL OUTPUT END ===
-[app][error][reload.fetch_tools.list_tools] failed to list tools from external command `npx -y @modelcontextprotocol/server-github` | chain: cli.reload: failed to reload MCP server `github` <- reload.fetch_tools: failed to fetch tools from MCP server `github` <- reload.fetch_tools.list_tools: failed to list tools from external command `npx -y @modelcontextprotocol/server-github`
+=== MSP ERROR BEGIN ===
+stage: reload.fetch_tools.list_tools
+summary: failed to list tools from external command `npx -y @modelcontextprotocol/server-github`
+causes:
+  1. cli.reload: failed to reload MCP server `github`
+  2. reload.fetch_tools: failed to fetch tools from MCP server `github`
+  3. reload.fetch_tools.list_tools: failed to list tools from external command `npx -y @modelcontextprotocol/server-github`
+=== MSP ERROR END ===
 ```
 
 ## Release Binaries
@@ -229,9 +235,9 @@ Each configured server is emitted on its own application output line and include
 Example:
 
 ```text
-[app][info][cli.list] Configured 2 MCP server(s) in /Users/example/.config/mcp-smart-proxy/config.toml
-[app][info][cli.list.server] github -> npx -y @modelcontextprotocol/server-github | last_updated: 2026-03-16 10:30:45
-[app][info][cli.list.server] slack -> uvx slack-mcp | last_updated: never
+[MSP][INFO][cli.list] Configured 2 MCP server(s) in /Users/example/.config/mcp-smart-proxy/config.toml
+[MSP][INFO][cli.list.server] `github`: npx -y @modelcontextprotocol/server-github (last updated: 2026-03-16 10:30:45)
+[MSP][INFO][cli.list.server] `slack`: uvx slack-mcp (last updated: never)
 ```
 
 ### Remove a server
