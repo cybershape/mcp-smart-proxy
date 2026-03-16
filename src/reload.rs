@@ -24,10 +24,15 @@ use crate::console::{
 use crate::paths::{cache_file_path, unix_epoch_ms};
 use crate::types::{
     CachedTools, CodexRuntimeConfig, ConfiguredServer, ModelProviderConfig, OpenAiRuntimeConfig,
-    tool_snapshot,
+    ToolSnapshot, tool_snapshot,
 };
 
-pub async fn reload_server(config_path: &Path, name: &str) -> Result<PathBuf, Box<dyn Error>> {
+pub struct ReloadResult {
+    pub cache_path: PathBuf,
+    pub updated: bool,
+}
+
+pub async fn reload_server(config_path: &Path, name: &str) -> Result<ReloadResult, Box<dyn Error>> {
     let config = load_config_table(config_path).map_err(|error| {
         operation_error(
             "reload.load_config",
@@ -58,6 +63,27 @@ pub async fn reload_server(config_path: &Path, name: &str) -> Result<PathBuf, Bo
                 error,
             )
         })?;
+    let cache_path = cache_file_path(&resolved_name).map_err(|error| {
+        operation_error(
+            "reload.cache_path",
+            format!("failed to compute cache path for `{resolved_name}`"),
+            error,
+        )
+    })?;
+    let tool_snapshots = tools.iter().map(tool_snapshot).collect::<Vec<_>>();
+    if cached_tools_match(&cache_path, &tool_snapshots).map_err(|error| {
+        operation_error(
+            "reload.compare_cached_tools",
+            format!("failed to compare fetched tools with cached tools for `{resolved_name}`"),
+            error,
+        )
+    })? {
+        return Ok(ReloadResult {
+            cache_path,
+            updated: false,
+        });
+    }
+
     let summary = summarize_tools(&provider, &resolved_name, &tools)
         .await
         .map_err(|error| {
@@ -67,13 +93,6 @@ pub async fn reload_server(config_path: &Path, name: &str) -> Result<PathBuf, Bo
                 error,
             )
         })?;
-    let cache_path = cache_file_path(&resolved_name).map_err(|error| {
-        operation_error(
-            "reload.cache_path",
-            format!("failed to compute cache path for `{resolved_name}`"),
-            error,
-        )
-    })?;
     let payload = CachedTools {
         server: resolved_name,
         summary,
@@ -84,7 +103,7 @@ pub async fn reload_server(config_path: &Path, name: &str) -> Result<PathBuf, Bo
                 error,
             )
         })?,
-        tools: tools.iter().map(tool_snapshot).collect(),
+        tools: tool_snapshots,
     };
 
     write_cache(&cache_path, &payload).map_err(|error| {
@@ -94,7 +113,10 @@ pub async fn reload_server(config_path: &Path, name: &str) -> Result<PathBuf, Bo
             error,
         )
     })?;
-    Ok(cache_path)
+    Ok(ReloadResult {
+        cache_path,
+        updated: true,
+    })
 }
 
 async fn fetch_tools(
@@ -430,6 +452,43 @@ fn non_empty_summary(value: Option<&str>, empty_message: &str) -> Result<String,
         })
 }
 
+fn cached_tools_match(path: &Path, tools: &[ToolSnapshot]) -> Result<bool, Box<dyn Error>> {
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    let cached = read_cached_tools(path)?;
+    Ok(serialize_tool_snapshots(&cached.tools)? == serialize_tool_snapshots(tools)?)
+}
+
+fn read_cached_tools(path: &Path) -> Result<CachedTools, Box<dyn Error>> {
+    let contents = fs::read_to_string(path).map_err(|error| {
+        operation_error(
+            "reload.read_cache.read_file",
+            format!("failed to read cache file {}", path.display()),
+            Box::new(error),
+        )
+    })?;
+
+    serde_json::from_str(&contents).map_err(|error| {
+        operation_error(
+            "reload.read_cache.deserialize",
+            format!("failed to deserialize cache file {}", path.display()),
+            Box::new(error),
+        )
+    })
+}
+
+fn serialize_tool_snapshots(tools: &[ToolSnapshot]) -> Result<String, Box<dyn Error>> {
+    serde_json::to_string_pretty(tools).map_err(|error| {
+        operation_error(
+            "reload.compare_cached_tools.serialize",
+            "failed to serialize tool snapshots for comparison",
+            Box::new(error),
+        )
+    })
+}
+
 fn write_cache(path: &Path, payload: &CachedTools) -> Result<(), Box<dyn Error>> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
@@ -461,6 +520,7 @@ fn write_cache(path: &Path, payload: &CachedTools) -> Result<(), Box<dyn Error>>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn codex_output_path_is_created_in_temp_dir() {
@@ -496,5 +556,77 @@ mod tests {
             error.to_string(),
             "reload.summarize_tools.empty_summary: empty"
         );
+    }
+
+    #[test]
+    fn matches_cached_tools_by_serialized_tool_string() {
+        let cache_path = env::temp_dir().join(format!(
+            "mcp-smart-proxy-reload-cache-{}.json",
+            unix_epoch_ms().unwrap()
+        ));
+        let tools = vec![ToolSnapshot {
+            name: "search".to_string(),
+            title: Some("Search".to_string()),
+            description: Some("Find items".to_string()),
+            input_schema: json!({"type":"object"}),
+            output_schema: None,
+            annotations: None,
+            execution: None,
+            icons: None,
+            meta: None,
+        }];
+        let payload = CachedTools {
+            server: "demo".to_string(),
+            summary: "old summary".to_string(),
+            fetched_at_epoch_ms: 1,
+            tools: tools.clone(),
+        };
+
+        write_cache(&cache_path, &payload).unwrap();
+
+        assert!(cached_tools_match(&cache_path, &tools).unwrap());
+
+        fs::remove_file(cache_path).unwrap();
+    }
+
+    #[test]
+    fn detects_when_cached_tools_differ() {
+        let cache_path = env::temp_dir().join(format!(
+            "mcp-smart-proxy-reload-cache-diff-{}.json",
+            unix_epoch_ms().unwrap()
+        ));
+        let payload = CachedTools {
+            server: "demo".to_string(),
+            summary: "old summary".to_string(),
+            fetched_at_epoch_ms: 1,
+            tools: vec![ToolSnapshot {
+                name: "search".to_string(),
+                title: Some("Search".to_string()),
+                description: Some("Find items".to_string()),
+                input_schema: json!({"type":"object"}),
+                output_schema: None,
+                annotations: None,
+                execution: None,
+                icons: None,
+                meta: None,
+            }],
+        };
+        let updated_tools = vec![ToolSnapshot {
+            name: "lookup".to_string(),
+            title: Some("Lookup".to_string()),
+            description: Some("Lookup items".to_string()),
+            input_schema: json!({"type":"object"}),
+            output_schema: None,
+            annotations: None,
+            execution: None,
+            icons: None,
+            meta: None,
+        }];
+
+        write_cache(&cache_path, &payload).unwrap();
+
+        assert!(!cached_tools_match(&cache_path, &updated_tools).unwrap());
+
+        fs::remove_file(cache_path).unwrap();
     }
 }

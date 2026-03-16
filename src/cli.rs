@@ -29,8 +29,8 @@ pub enum Command {
     Import { source: ImportSource },
     /// Remove a configured MCP server and its cached tools.
     Remove { name: String },
-    /// Refresh cached tool metadata for a configured MCP server.
-    Reload { name: String },
+    /// Refresh cached tool metadata for one configured MCP server, or all servers when omitted.
+    Reload { name: Option<String> },
     /// Start a stdio MCP server that exposes cached toolset activation.
     Mcp,
     /// Update application configuration.
@@ -65,4 +65,29 @@ pub enum ConfigCommand {
         #[arg(long = "default")]
         make_default: bool,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_reload_without_name() {
+        let cli = Cli::parse_from(["msp", "reload"]);
+
+        match cli.command {
+            Some(Command::Reload { name }) => assert_eq!(name, None),
+            other => panic!("expected reload command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_reload_with_name() {
+        let cli = Cli::parse_from(["msp", "reload", "github"]);
+
+        match cli.command {
+            Some(Command::Reload { name }) => assert_eq!(name.as_deref(), Some("github")),
+            other => panic!("expected reload command, got {other:?}"),
+        }
+    }
 }

@@ -285,12 +285,21 @@ msp config codex --default
 msp reload github
 ```
 
+Or reload every configured server:
+
+```bash
+msp reload
+```
+
 This command:
 
-1. connects to the configured MCP server
-2. fetches its tool list
-3. asks the configured default provider for a one-sentence summary
-4. writes the cache file
+1. reloads the named MCP server, or every configured server if no name is given
+2. connects to each selected MCP server
+3. fetches its tool list
+4. compares the fetched tool list with the cached tool list using JSON string equality
+5. if the tools changed, asks the configured default provider for a one-sentence summary and writes the cache file
+
+If the fetched tools match the cached tools exactly, `reload` skips the summary call and leaves the cache file unchanged.
 
 The cache is stored at:
 

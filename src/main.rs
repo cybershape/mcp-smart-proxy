@@ -46,21 +46,22 @@ async fn run() -> Result<(), Box<dyn Error>> {
                     error,
                 )
             })?;
-            let cache_path = reload_server(&config_path, &server_name)
-                .await
-                .map_err(|error| {
-                    operation_error(
-                        "cli.add.reload",
-                        format!("failed to reload newly added MCP server `{server_name}`"),
-                        error,
-                    )
-                })?;
+            let reload_result =
+                reload_server(&config_path, &server_name)
+                    .await
+                    .map_err(|error| {
+                        operation_error(
+                            "cli.add.reload",
+                            format!("failed to reload newly added MCP server `{server_name}`"),
+                            error,
+                        )
+                    })?;
             print_app_event(
                 "cli.add",
                 format!(
                     "Added stdio MCP server `{server_name}` to {} and reloaded cached tools into {}",
                     config_path.display(),
-                    cache_path.display()
+                    reload_result.cache_path.display()
                 ),
             );
         }
@@ -144,7 +145,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
                             error,
                         )
                     })?;
-                let cache_path =
+                let reload_result =
                     reload_server(&config_path, &server_name)
                         .await
                         .map_err(|error| {
@@ -157,7 +158,10 @@ async fn run() -> Result<(), Box<dyn Error>> {
                                 error,
                             )
                         })?;
-                imported_servers.push(format!("{server_name} -> {}", cache_path.display()));
+                imported_servers.push(format!(
+                    "{server_name} -> {}",
+                    reload_result.cache_path.display()
+                ));
                 config = load_config_table(&config_path).map_err(|error| {
                     operation_error(
                         "cli.import.codex.refresh_config",
@@ -231,8 +235,8 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 ),
             );
         }
-        Some(Command::Reload { name }) => {
-            let cache_path = reload_server(&config_path, &name).await.map_err(|error| {
+        Some(Command::Reload { name: Some(name) }) => {
+            let reload_result = reload_server(&config_path, &name).await.map_err(|error| {
                 operation_error(
                     "cli.reload",
                     format!("failed to reload MCP server `{name}`"),
@@ -241,8 +245,71 @@ async fn run() -> Result<(), Box<dyn Error>> {
             })?;
             print_app_event(
                 "cli.reload",
-                format!("Reloaded MCP server `{name}` into {}", cache_path.display()),
+                if reload_result.updated {
+                    format!(
+                        "Reloaded MCP server `{name}` into {}",
+                        reload_result.cache_path.display()
+                    )
+                } else {
+                    format!(
+                        "Skipped cache update for MCP server `{name}` because the fetched tools matched {}",
+                        reload_result.cache_path.display()
+                    )
+                },
             );
+        }
+        Some(Command::Reload { name: None }) => {
+            let servers = list_servers(&config_path).map_err(|error| {
+                operation_error(
+                    "cli.reload.list_servers",
+                    format!(
+                        "failed to list MCP servers from {} before reloading all",
+                        config_path.display()
+                    ),
+                    error,
+                )
+            })?;
+
+            if servers.is_empty() {
+                print_app_event(
+                    "cli.reload",
+                    format!("Reloaded 0 MCP server(s) from {}", config_path.display()),
+                );
+            } else {
+                let mut results = Vec::new();
+                for server in servers {
+                    let server_name = server.name;
+                    let reload_result =
+                        reload_server(&config_path, &server_name)
+                            .await
+                            .map_err(|error| {
+                                operation_error(
+                                    "cli.reload.all",
+                                    format!("failed to reload MCP server `{server_name}`"),
+                                    error,
+                                )
+                            })?;
+                    let status = if reload_result.updated {
+                        "updated"
+                    } else {
+                        "unchanged"
+                    };
+                    results.push(format!(
+                        "{server_name} -> {} ({status})",
+                        reload_result.cache_path.display()
+                    ));
+                }
+
+                print_app_event(
+                    "cli.reload",
+                    format!(
+                        "Reloaded {} MCP server(s) from {}: {}",
+                        results.len(),
+                        config_path.display(),
+                        results.join(", ")
+                    ),
+                );
+            }
         }
         Some(Command::Mcp) => {
             mcp_server::serve_cached_toolsets(&config_path)
