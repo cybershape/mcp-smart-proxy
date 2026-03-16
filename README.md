@@ -88,7 +88,9 @@ error_chain:
 
 ## Release Binaries
 
-Pushing a tag that starts with `v` publishes release binaries automatically on GitHub Releases and updates `Formula/msp.rb` for Homebrew.
+Pushing a tag that starts with `v` publishes release binaries automatically on GitHub Releases, updates `Formula/msp.rb` in this repository, and syncs the formula to the Homebrew tap repository `tiejunhu/homebrew-mcp-smart-proxy`.
+
+Before using the release workflow, add a repository secret named `HOMEBREW_TAP_GITHUB_TOKEN` with permission to push to `tiejunhu/homebrew-mcp-smart-proxy`.
 
 Example:
 
