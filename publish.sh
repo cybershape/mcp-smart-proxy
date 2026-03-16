@@ -4,6 +4,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cargo_toml="${repo_root}/Cargo.toml"
+cargo_lock="${repo_root}/Cargo.lock"
 
 current_version() {
   awk '
@@ -110,9 +111,15 @@ main() {
   fi
 
   update_version "${new_version}"
+  cargo check >/dev/null
 
-  git add Cargo.toml
-  git commit -m "release ${new_version}" -- Cargo.toml
+  if [[ ! -f "${cargo_lock}" ]]; then
+    echo "Cargo.lock was not generated" >&2
+    exit 1
+  fi
+
+  git add Cargo.toml Cargo.lock
+  git commit -m "release ${new_version}" -- Cargo.toml Cargo.lock
   git tag "v${new_version}"
   git push origin "v${new_version}"
 }

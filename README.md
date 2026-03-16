@@ -115,7 +115,7 @@ You can prepare a release tag with:
 ./publish.sh
 ```
 
-This reads `version` from `Cargo.toml`, increments only the last numeric component, commits the change as `release <new version>`, creates `v<new version>`, and pushes that tag.
+This reads `version` from `Cargo.toml`, increments only the last numeric component, refreshes `Cargo.lock`, commits both files as `release <new version>`, creates `v<new version>`, and pushes that tag.
 
 To set an explicit version instead of incrementing automatically:
 
