@@ -15,6 +15,17 @@ pub struct OpenAiRuntimeConfig {
     pub model: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct CodexRuntimeConfig {
+    pub model: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum ModelProviderConfig {
+    OpenAi(OpenAiRuntimeConfig),
+    Codex(CodexRuntimeConfig),
+}
+
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct CachedTools {
     pub server: String,

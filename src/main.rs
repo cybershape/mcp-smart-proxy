@@ -10,7 +10,10 @@ mod reload;
 mod types;
 
 use cli::{Cli, Command, ConfigCommand};
-use config::{OpenAiConfigUpdate, add_server, load_config_table, update_openai_config};
+use config::{
+    CodexConfigUpdate, OpenAiConfigUpdate, add_server, load_config_table, update_codex_config,
+    update_openai_config,
+};
 use paths::expand_tilde;
 use reload::reload_server;
 
@@ -22,9 +25,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     match cli.command {
         Some(Command::Add { name, command }) => {
             let server_name = add_server(&config_path, &name, command)?;
+            let cache_path = reload_server(&config_path, &server_name).await?;
             println!(
-                "Added stdio MCP server `{server_name}` to {}",
-                config_path.display()
+                "Added stdio MCP server `{server_name}` to {} and reloaded cached tools into {}",
+                config_path.display(),
+                cache_path.display()
             );
         }
         Some(Command::Reload { name }) => {
@@ -40,6 +45,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     baseurl,
                     key,
                     model,
+                    make_default,
                 },
         }) => {
             update_openai_config(
@@ -48,9 +54,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     baseurl,
                     key,
                     model,
+                    make_default,
                 },
             )?;
             println!("Updated OpenAI config in {}", config_path.display());
+        }
+        Some(Command::Config {
+            command:
+                ConfigCommand::Codex {
+                    model,
+                    make_default,
+                },
+        }) => {
+            update_codex_config(
+                &config_path,
+                CodexConfigUpdate {
+                    model,
+                    make_default,
+                },
+            )?;
+            println!("Updated Codex config in {}", config_path.display());
         }
         None => {
             if config_path.exists() {

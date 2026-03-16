@@ -21,7 +21,8 @@ This lets another AI inspect cached toolsets first, then call only the downstrea
 ## Requirements
 
 - Rust toolchain
-- An OpenAI-compatible API key for `reload`
+- An OpenAI-compatible API key for `reload` when using the `openai` provider
+- The `codex` CLI for `reload` when using the `codex` provider
 - Any downstream MCP servers must use stdio transport
 
 ## Install
@@ -81,10 +82,15 @@ You can override it with `--config <PATH>`.
 Example config:
 
 ```toml
+default_provider = "openai"
+
 [openai]
 key = "sk-..."
 model = "gpt-5.2"
 # baseurl = "https://api.openai.com/v1"
+
+[codex]
+model = "gpt-5.2"
 
 [servers.github]
 transport = "stdio"
@@ -100,9 +106,10 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 Notes:
 
 - Only stdio transport is supported.
+- `default_provider` is required for commands that need an AI model, such as `reload`.
 - `openai.key` can also come from `OPENAI_API_KEY`.
 - `openai.baseurl` can also come from `OPENAI_API_BASE`.
-- If `openai.model` is missing, the default is `gpt-5.2`.
+- If `openai.model` or `codex.model` is missing, the default is `gpt-5.2`.
 
 ## Commands
 
@@ -112,7 +119,13 @@ Notes:
 msp add github npx -y @modelcontextprotocol/server-github
 ```
 
-This writes the server definition into the config file.
+This command:
+
+1. checks that a supported `default_provider` is already configured
+2. writes the server definition into the config file
+3. immediately runs the same refresh flow as `reload`
+
+If the default provider is missing, `add` fails before changing the config file.
 
 Server names are normalized to lowercase kebab-case. For example, `GitHub Tools` becomes `github-tools`.
 
@@ -138,7 +151,24 @@ Optional fields:
 
 ```bash
 msp config openai --baseurl https://api.openai.com/v1
+msp config openai --default
 ```
+
+`--default` writes `default_provider = "openai"` into the config file. Model-backed commands fail fast if `default_provider` is missing.
+
+### Configure Codex settings
+
+```bash
+msp config codex --model gpt-5.2
+```
+
+Optional fields:
+
+```bash
+msp config codex --default
+```
+
+`codex.model` is optional and defaults to `gpt-5.2`. When `default_provider = "codex"`, model-backed commands call `codex exec` to generate the same one-sentence toolset summary used by the OpenAI provider.
 
 ### Reload cached tools
 
@@ -150,7 +180,7 @@ This command:
 
 1. connects to the configured MCP server
 2. fetches its tool list
-3. asks the OpenAI-compatible model for a one-sentence summary
+3. asks the configured default provider for a one-sentence summary
 4. writes the cache file
 
 The cache is stored at:
@@ -159,7 +189,10 @@ The cache is stored at:
 ~/.cache/mcp-smart-proxy/<server-name>.json
 ```
 
-`reload` requires an OpenAI API key from config or `OPENAI_API_KEY`.
+`reload` requires a supported `default_provider`.
+
+- For `openai`, configure `openai.key` or `OPENAI_API_KEY`.
+- For `codex`, install the `codex` CLI; `reload` runs `codex exec`.
 
 ### Start the proxy MCP server
 
@@ -175,7 +208,16 @@ If a configured server has no cache yet, it is ignored until `reload` is run for
 
 ```bash
 msp add github npx -y @modelcontextprotocol/server-github
-msp config openai --key "$OPENAI_API_KEY"
+msp config openai --key "$OPENAI_API_KEY" --default
+msp reload github
+msp mcp
+```
+
+Using Codex:
+
+```bash
+msp add github npx -y @modelcontextprotocol/server-github
+msp config codex --default
 msp reload github
 msp mcp
 ```

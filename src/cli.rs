@@ -17,7 +17,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Add a stdio MCP server to the config file.
+    /// Add a stdio MCP server and refresh its cached tools.
     Add {
         name: String,
         #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
@@ -44,5 +44,14 @@ pub enum ConfigCommand {
         key: Option<String>,
         #[arg(long)]
         model: Option<String>,
+        #[arg(long = "default")]
+        make_default: bool,
+    },
+    /// Update Codex settings.
+    Codex {
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long = "default")]
+        make_default: bool,
     },
 }

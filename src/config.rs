@@ -6,11 +6,16 @@ use std::path::Path;
 use toml::{Table, Value};
 
 use crate::paths::sanitize_name;
-use crate::types::{ConfiguredServer, OpenAiRuntimeConfig};
+use crate::types::{
+    CodexRuntimeConfig, ConfiguredServer, ModelProviderConfig, OpenAiRuntimeConfig,
+};
 
 const DEFAULT_OPENAI_MODEL: &str = "gpt-5.2";
+const DEFAULT_PROVIDER_KEY: &str = "default_provider";
+const CODEX_PROVIDER_NAME: &str = "codex";
 const OPENAI_API_BASE_ENV: &str = "OPENAI_API_BASE";
 const OPENAI_API_KEY_ENV: &str = "OPENAI_API_KEY";
+const OPENAI_PROVIDER_NAME: &str = "openai";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct StdioServer {
@@ -36,6 +41,12 @@ pub struct OpenAiConfigUpdate {
     pub baseurl: Option<String>,
     pub key: Option<String>,
     pub model: Option<String>,
+    pub make_default: bool,
+}
+
+pub struct CodexConfigUpdate {
+    pub model: Option<String>,
+    pub make_default: bool,
 }
 
 pub fn add_server(
@@ -51,6 +62,7 @@ pub fn add_server(
     if name.is_empty() {
         return Err("server name must contain at least one ASCII letter or digit".into());
     }
+    load_default_model_provider_config(&config)?;
     if has_server_name(&config, &name) {
         return Err(format!("server `{name}` already exists").into());
     }
@@ -156,6 +168,36 @@ pub fn update_openai_config(
     set_optional_string(openai, "baseurl", update.baseurl);
     set_optional_string(openai, "key", update.key);
     set_optional_string(openai, "model", update.model);
+    if update.make_default {
+        config.insert(
+            DEFAULT_PROVIDER_KEY.to_string(),
+            Value::String(OPENAI_PROVIDER_NAME.to_string()),
+        );
+    }
+
+    save_config_table(config_path, &config)?;
+    Ok(())
+}
+
+pub fn update_codex_config(
+    config_path: &Path,
+    update: CodexConfigUpdate,
+) -> Result<(), Box<dyn Error>> {
+    let mut config = load_config_table(config_path)?;
+    let codex_value = config
+        .entry(CODEX_PROVIDER_NAME)
+        .or_insert_with(|| Value::Table(Table::new()));
+    let codex = codex_value
+        .as_table_mut()
+        .ok_or_else(|| "`codex` in config must be a table".to_string())?;
+
+    set_optional_string(codex, "model", update.model);
+    if update.make_default {
+        config.insert(
+            DEFAULT_PROVIDER_KEY.to_string(),
+            Value::String(CODEX_PROVIDER_NAME.to_string()),
+        );
+    }
 
     save_config_table(config_path, &config)?;
     Ok(())
@@ -164,9 +206,9 @@ pub fn update_openai_config(
 pub fn load_openai_runtime_config(config: &Table) -> Result<OpenAiRuntimeConfig, Box<dyn Error>> {
     let table = config.get("openai").and_then(Value::as_table);
 
-    let baseurl = openai_optional_string(table, "baseurl", Some(OPENAI_API_BASE_ENV));
+    let baseurl = table_optional_string(table, "baseurl", Some(OPENAI_API_BASE_ENV));
     let key = openai_string(table, "key", Some(OPENAI_API_KEY_ENV))?;
-    let model = openai_optional_string(table, "model", None)
+    let model = table_optional_string(table, "model", None)
         .unwrap_or_else(|| DEFAULT_OPENAI_MODEL.to_string());
 
     Ok(OpenAiRuntimeConfig {
@@ -174,6 +216,35 @@ pub fn load_openai_runtime_config(config: &Table) -> Result<OpenAiRuntimeConfig,
         key,
         model,
     })
+}
+
+pub fn load_codex_runtime_config(config: &Table) -> Result<CodexRuntimeConfig, Box<dyn Error>> {
+    let table = config.get(CODEX_PROVIDER_NAME).and_then(Value::as_table);
+    let model = table_optional_string(table, "model", None)
+        .unwrap_or_else(|| DEFAULT_OPENAI_MODEL.to_string());
+
+    Ok(CodexRuntimeConfig { model })
+}
+
+pub fn load_default_model_provider_config(
+    config: &Table,
+) -> Result<ModelProviderConfig, Box<dyn Error>> {
+    let provider = config
+        .get(DEFAULT_PROVIDER_KEY)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "missing `default_provider` in config; model-backed commands cannot run".to_string()
+        })?;
+
+    match provider {
+        OPENAI_PROVIDER_NAME => load_openai_runtime_config(config).map(ModelProviderConfig::OpenAi),
+        CODEX_PROVIDER_NAME => load_codex_runtime_config(config).map(ModelProviderConfig::Codex),
+        _ => Err(format!(
+            "unsupported `default_provider` `{provider}`; supported providers are `openai` and `codex`"
+        )
+        .into()),
+    }
 }
 
 fn normalize_add_command(raw_command: Vec<String>) -> Vec<String> {
@@ -236,7 +307,7 @@ fn openai_string(
     key: &str,
     env_key: Option<&str>,
 ) -> Result<String, Box<dyn Error>> {
-    openai_optional_string(table, key, env_key).ok_or_else(|| {
+    table_optional_string(table, key, env_key).ok_or_else(|| {
         let message = match env_key {
             Some(env_key) => {
                 format!("missing `openai.{key}` in config and `{env_key}` in environment")
@@ -248,7 +319,7 @@ fn openai_string(
     })
 }
 
-fn openai_optional_string(
+fn table_optional_string(
     table: Option<&Table>,
     key: &str,
     env_key: Option<&str>,
@@ -358,6 +429,14 @@ mod tests {
     #[test]
     fn writes_stdio_server_to_config() {
         let config_path = unique_test_path("write-server-config.toml");
+        update_codex_config(
+            &config_path,
+            CodexConfigUpdate {
+                model: None,
+                make_default: true,
+            },
+        )
+        .unwrap();
         let server_name = add_server(
             &config_path,
             "ones",
@@ -384,6 +463,14 @@ mod tests {
     #[test]
     fn rejects_duplicate_server_name() {
         let config_path = unique_test_path("duplicate-server-config.toml");
+        update_codex_config(
+            &config_path,
+            CodexConfigUpdate {
+                model: None,
+                make_default: true,
+            },
+        )
+        .unwrap();
         add_server(
             &config_path,
             "ones",
@@ -403,6 +490,24 @@ mod tests {
     }
 
     #[test]
+    fn rejects_add_when_default_provider_is_missing() {
+        let config_path = unique_test_path("missing-default-provider.toml");
+
+        let error = add_server(
+            &config_path,
+            "ones",
+            vec!["https://ones.com/mcp".to_string()],
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "missing `default_provider` in config; model-backed commands cannot run"
+        );
+        assert!(!config_path.exists());
+    }
+
+    #[test]
     fn updates_openai_config_with_partial_fields() {
         let config_path = unique_test_path("openai-config.toml");
         update_openai_config(
@@ -411,6 +516,7 @@ mod tests {
                 baseurl: Some("https://api.example.com/v1".to_string()),
                 key: None,
                 model: Some("gpt-4.1-mini".to_string()),
+                make_default: false,
             },
         )
         .unwrap();
@@ -429,6 +535,26 @@ mod tests {
     }
 
     #[test]
+    fn updates_codex_config_with_partial_fields() {
+        let config_path = unique_test_path("codex-config.toml");
+        update_codex_config(
+            &config_path,
+            CodexConfigUpdate {
+                model: Some("gpt-5.2".to_string()),
+                make_default: false,
+            },
+        )
+        .unwrap();
+
+        let config = load_config_table(&config_path).unwrap();
+        let codex = config["codex"].as_table().unwrap();
+
+        assert_eq!(codex["model"].as_str(), Some("gpt-5.2"));
+
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
     fn preserves_existing_openai_fields_when_updating_subset() {
         let config_path = unique_test_path("openai-config-preserve.toml");
         update_openai_config(
@@ -437,6 +563,7 @@ mod tests {
                 baseurl: Some("https://api.example.com/v1".to_string()),
                 key: Some("sk-old".to_string()),
                 model: Some("gpt-4.1".to_string()),
+                make_default: false,
             },
         )
         .unwrap();
@@ -446,6 +573,7 @@ mod tests {
                 baseurl: None,
                 key: Some("sk-new".to_string()),
                 model: None,
+                make_default: false,
             },
         )
         .unwrap();
@@ -464,10 +592,52 @@ mod tests {
     }
 
     #[test]
+    fn sets_openai_as_default_provider_when_requested() {
+        let config_path = unique_test_path("openai-config-default.toml");
+        update_openai_config(
+            &config_path,
+            OpenAiConfigUpdate {
+                baseurl: None,
+                key: Some("sk-default".to_string()),
+                model: None,
+                make_default: true,
+            },
+        )
+        .unwrap();
+
+        let config = load_config_table(&config_path).unwrap();
+
+        assert_eq!(config["default_provider"].as_str(), Some("openai"));
+
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
+    fn sets_codex_as_default_provider_when_requested() {
+        let config_path = unique_test_path("codex-config-default.toml");
+        update_codex_config(
+            &config_path,
+            CodexConfigUpdate {
+                model: Some("gpt-5.2".to_string()),
+                make_default: true,
+            },
+        )
+        .unwrap();
+
+        let config = load_config_table(&config_path).unwrap();
+
+        assert_eq!(config["default_provider"].as_str(), Some("codex"));
+
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
     fn loads_openai_base_and_key_from_environment_when_config_is_missing_them() {
         with_openai_env(Some("https://env.example.com/v1"), Some("sk-env"), || {
             let config: Table = toml::from_str(
                 r#"
+                        default_provider = "openai"
+
                         [openai]
                         model = "gpt-4.1-mini"
                     "#,
@@ -490,6 +660,8 @@ mod tests {
         with_openai_env(Some("https://env.example.com/v1"), Some("sk-env"), || {
             let config: Table = toml::from_str(
                 r#"
+                        default_provider = "openai"
+
                         [openai]
                         baseurl = "https://config.example.com/v1"
                         key = "sk-config"
@@ -514,6 +686,8 @@ mod tests {
         with_openai_env(None, Some("sk-env"), || {
             let config: Table = toml::from_str(
                 r#"
+                    default_provider = "openai"
+
                     [openai]
                     model = "gpt-4.1-mini"
                 "#,
@@ -533,6 +707,8 @@ mod tests {
         with_openai_env(None, Some("sk-env"), || {
             let config: Table = toml::from_str(
                 r#"
+                    default_provider = "openai"
+
                     [openai]
                 "#,
             )
@@ -551,6 +727,8 @@ mod tests {
         with_openai_env(None, None, || {
             let config: Table = toml::from_str(
                 r#"
+                    default_provider = "openai"
+
                     [openai]
                 "#,
             )
@@ -563,6 +741,90 @@ mod tests {
                 "missing `openai.key` in config and `OPENAI_API_KEY` in environment"
             );
         });
+    }
+
+    #[test]
+    fn requires_default_provider_for_model_backed_runtime() {
+        with_openai_env(None, Some("sk-env"), || {
+            let config: Table = toml::from_str(
+                r#"
+                    [openai]
+                "#,
+            )
+            .unwrap();
+
+            let error = load_default_model_provider_config(&config).unwrap_err();
+
+            assert_eq!(
+                error.to_string(),
+                "missing `default_provider` in config; model-backed commands cannot run"
+            );
+        });
+    }
+
+    #[test]
+    fn rejects_unsupported_default_provider_for_model_backed_runtime() {
+        with_openai_env(None, Some("sk-env"), || {
+            let config: Table = toml::from_str(
+                r#"
+                    default_provider = "anthropic"
+
+                    [openai]
+                "#,
+            )
+            .unwrap();
+
+            let error = load_default_model_provider_config(&config).unwrap_err();
+
+            assert_eq!(
+                error.to_string(),
+                "unsupported `default_provider` `anthropic`; supported providers are `openai` and `codex`"
+            );
+        });
+    }
+
+    #[test]
+    fn loads_default_openai_provider_runtime() {
+        with_openai_env(None, Some("sk-env"), || {
+            let config: Table = toml::from_str(
+                r#"
+                    default_provider = "openai"
+
+                    [openai]
+                    model = "gpt-4.1-mini"
+                "#,
+            )
+            .unwrap();
+
+            let runtime = load_default_model_provider_config(&config).unwrap();
+
+            match runtime {
+                ModelProviderConfig::OpenAi(openai) => {
+                    assert_eq!(openai.model, "gpt-4.1-mini");
+                    assert_eq!(openai.key, "sk-env");
+                }
+                ModelProviderConfig::Codex(_) => panic!("expected openai provider"),
+            }
+        });
+    }
+
+    #[test]
+    fn loads_default_codex_provider_runtime_with_default_model() {
+        let config: Table = toml::from_str(
+            r#"
+                default_provider = "codex"
+            "#,
+        )
+        .unwrap();
+
+        let runtime = load_default_model_provider_config(&config).unwrap();
+
+        match runtime {
+            ModelProviderConfig::Codex(codex) => {
+                assert_eq!(codex.model, DEFAULT_OPENAI_MODEL);
+            }
+            ModelProviderConfig::OpenAi(_) => panic!("expected codex provider"),
+        }
     }
 
     #[test]
