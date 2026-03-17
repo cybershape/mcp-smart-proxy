@@ -31,6 +31,7 @@ pub enum Command {
     /// List configured stdio MCP servers.
     List,
     /// Import MCP servers from another tool's config and refresh their cached tools.
+    #[command(arg_required_else_help = true)]
     Import { source: ImportSource },
     /// Remove a configured MCP server and its cached tools.
     Remove { name: String },
@@ -112,6 +113,16 @@ mod tests {
     #[test]
     fn config_codex_without_flags_shows_help() {
         let error = Cli::try_parse_from(["msp", "config", "codex"]).unwrap_err();
+
+        assert_eq!(
+            error.kind(),
+            ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        );
+    }
+
+    #[test]
+    fn import_without_source_shows_help() {
+        let error = Cli::try_parse_from(["msp", "import"]).unwrap_err();
 
         assert_eq!(
             error.kind(),

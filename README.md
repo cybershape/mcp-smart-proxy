@@ -222,6 +222,8 @@ If a Codex server launches this proxy with `msp mcp`, that entry is also skipped
 
 Only Codex MCP servers defined with `command` and optional string `args` are importable. Entries that rely on other settings such as `env`, `cwd`, or non-stdio transports are rejected instead of being imported partially.
 
+Running `msp import` without a source prints the command help instead of a missing-argument error.
+
 ### List configured servers
 
 ```bash
