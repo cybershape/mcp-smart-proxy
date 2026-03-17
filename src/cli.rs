@@ -61,11 +61,6 @@ pub enum Command {
         #[arg(long, value_enum)]
         provider: Option<ProviderName>,
     },
-    /// Update application configuration.
-    Config {
-        #[command(subcommand)]
-        command: ConfigCommand,
-    },
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -93,26 +88,6 @@ impl ProviderName {
             Self::Opencode => "opencode",
         }
     }
-}
-
-#[derive(Debug, Subcommand)]
-pub enum ConfigCommand {
-    /// Update Codex settings.
-    #[command(arg_required_else_help = true)]
-    Codex {
-        #[arg(long)]
-        model: Option<String>,
-        #[arg(long = "default")]
-        make_default: bool,
-    },
-    /// Update OpenCode settings.
-    #[command(arg_required_else_help = true)]
-    Opencode {
-        #[arg(long)]
-        model: Option<String>,
-        #[arg(long = "default")]
-        make_default: bool,
-    },
 }
 
 #[cfg(test)]
@@ -254,26 +229,6 @@ mod tests {
             }
             other => panic!("expected mcp command, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn config_codex_without_flags_shows_help() {
-        let error = Cli::try_parse_from(["msp", "config", "codex"]).unwrap_err();
-
-        assert_eq!(
-            error.kind(),
-            ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
-        );
-    }
-
-    #[test]
-    fn config_opencode_without_flags_shows_help() {
-        let error = Cli::try_parse_from(["msp", "config", "opencode"]).unwrap_err();
-
-        assert_eq!(
-            error.kind(),
-            ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
-        );
     }
 
     #[test]

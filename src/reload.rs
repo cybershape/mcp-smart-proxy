@@ -11,7 +11,7 @@ use rmcp::{
 };
 use tokio::io::AsyncWriteExt;
 
-use crate::config::{configured_server, load_config_table, load_default_model_provider_config};
+use crate::config::{configured_server, load_config_table, load_model_provider_config};
 use crate::console::{
     ExternalOutputCapture, ExternalOutputRouter, describe_command, message_error, operation_error,
     print_external_command_failure, print_external_output_block, print_external_output_if_present,
@@ -29,17 +29,10 @@ pub struct ReloadResult {
 }
 
 pub async fn reload_server(config_path: &Path, name: &str) -> Result<ReloadResult, Box<dyn Error>> {
-    let config = load_config_table(config_path).map_err(|error| {
-        operation_error(
-            "reload.load_config",
-            format!("failed to load config from {}", config_path.display()),
-            error,
-        )
-    })?;
-    let provider = load_default_model_provider_config(&config).map_err(|error| {
+    let provider = load_model_provider_config("codex").map_err(|error| {
         operation_error(
             "reload.load_provider",
-            "failed to load the default model provider configuration",
+            "failed to resolve the default summary provider",
             error,
         )
     })?;

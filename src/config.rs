@@ -16,7 +16,6 @@ const DEFAULT_OPENCODE_MODEL: &str = "openai/gpt-5.2";
 const DEFAULT_CODEX_CONFIG_PATH: &str = "~/.codex/config.toml";
 const DEFAULT_OPENCODE_CONFIG_PATH: &str = "~/.config/opencode/opencode.json";
 const CODEX_HOME_ENV: &str = "CODEX_HOME";
-const DEFAULT_PROVIDER_KEY: &str = "default_provider";
 const CODEX_PROVIDER_NAME: &str = "codex";
 const OPENCODE_PROVIDER_NAME: &str = "opencode";
 const SELF_EXECUTABLE_NAME: &str = "msp";
@@ -105,22 +104,12 @@ pub struct RestoreMcpServersResult {
     pub restored_server_count: usize,
 }
 
-pub struct CodexConfigUpdate {
-    pub model: Option<String>,
-    pub make_default: bool,
-}
-
-pub struct OpencodeConfigUpdate {
-    pub model: Option<String>,
-    pub make_default: bool,
-}
-
 pub fn add_server(
     config_path: &Path,
     name: &str,
     raw_command: Vec<String>,
 ) -> Result<String, Box<dyn Error>> {
-    save_server(config_path, name, raw_command, true)
+    save_server(config_path, name, raw_command)
 }
 
 pub fn import_server(
@@ -128,14 +117,13 @@ pub fn import_server(
     name: &str,
     raw_command: Vec<String>,
 ) -> Result<String, Box<dyn Error>> {
-    save_server(config_path, name, raw_command, false)
+    save_server(config_path, name, raw_command)
 }
 
 fn save_server(
     config_path: &Path,
     name: &str,
     raw_command: Vec<String>,
-    require_default_provider: bool,
 ) -> Result<String, Box<dyn Error>> {
     let normalized = normalize_add_command(raw_command);
     if is_self_server_command(&normalized) {
@@ -147,9 +135,6 @@ fn save_server(
     let name = sanitize_name(name);
     if name.is_empty() {
         return Err("server name must contain at least one ASCII letter or digit".into());
-    }
-    if require_default_provider {
-        load_default_model_provider_config(&config)?;
     }
     if has_server_name(&config, &name) {
         return Err(format!("server `{name}` already exists").into());
@@ -347,54 +332,6 @@ pub fn configured_server(
     Ok((resolved_name, ConfiguredServer { command, args }))
 }
 
-pub fn update_codex_config(
-    config_path: &Path,
-    update: CodexConfigUpdate,
-) -> Result<(), Box<dyn Error>> {
-    let mut config = load_config_table(config_path)?;
-    let codex_value = config
-        .entry(CODEX_PROVIDER_NAME)
-        .or_insert_with(|| Value::Table(Table::new()));
-    let codex = codex_value
-        .as_table_mut()
-        .ok_or_else(|| "`codex` in config must be a table".to_string())?;
-
-    set_optional_string(codex, "model", update.model);
-    if update.make_default {
-        config.insert(
-            DEFAULT_PROVIDER_KEY.to_string(),
-            Value::String(CODEX_PROVIDER_NAME.to_string()),
-        );
-    }
-
-    save_config_table(config_path, &config)?;
-    Ok(())
-}
-
-pub fn update_opencode_config(
-    config_path: &Path,
-    update: OpencodeConfigUpdate,
-) -> Result<(), Box<dyn Error>> {
-    let mut config = load_config_table(config_path)?;
-    let opencode_value = config
-        .entry(OPENCODE_PROVIDER_NAME)
-        .or_insert_with(|| Value::Table(Table::new()));
-    let opencode = opencode_value
-        .as_table_mut()
-        .ok_or_else(|| "`opencode` in config must be a table".to_string())?;
-
-    set_optional_string(opencode, "model", update.model);
-    if update.make_default {
-        config.insert(
-            DEFAULT_PROVIDER_KEY.to_string(),
-            Value::String(OPENCODE_PROVIDER_NAME.to_string()),
-        );
-    }
-
-    save_config_table(config_path, &config)?;
-    Ok(())
-}
-
 pub fn load_codex_servers_for_import() -> Result<(PathBuf, ImportPlan), Box<dyn Error>> {
     let path = codex_config_path()?;
     let plan = load_codex_servers_for_import_from_path(&path)?;
@@ -514,47 +451,22 @@ pub fn restore_opencode_mcp_servers() -> Result<RestoreMcpServersResult, Box<dyn
     restore_opencode_mcp_servers_from_path(&config_path)
 }
 
-pub fn load_codex_runtime_config(config: &Table) -> Result<CodexRuntimeConfig, Box<dyn Error>> {
-    let table = config.get(CODEX_PROVIDER_NAME).and_then(Value::as_table);
-    let model =
-        table_optional_string(table, "model", None).unwrap_or_else(|| DEFAULT_MODEL.to_string());
-
-    Ok(CodexRuntimeConfig { model })
+pub fn load_codex_runtime_config() -> CodexRuntimeConfig {
+    CodexRuntimeConfig {
+        model: DEFAULT_MODEL.to_string(),
+    }
 }
 
-pub fn load_opencode_runtime_config(
-    config: &Table,
-) -> Result<OpencodeRuntimeConfig, Box<dyn Error>> {
-    let table = config.get(OPENCODE_PROVIDER_NAME).and_then(Value::as_table);
-    let model = table_optional_string(table, "model", None)
-        .unwrap_or_else(|| DEFAULT_OPENCODE_MODEL.to_string());
-
-    Ok(OpencodeRuntimeConfig { model })
+pub fn load_opencode_runtime_config() -> OpencodeRuntimeConfig {
+    OpencodeRuntimeConfig {
+        model: DEFAULT_OPENCODE_MODEL.to_string(),
+    }
 }
 
-pub fn load_default_model_provider_config(
-    config: &Table,
-) -> Result<ModelProviderConfig, Box<dyn Error>> {
-    let provider = config
-        .get(DEFAULT_PROVIDER_KEY)
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            "missing `default_provider` in config; model-backed commands cannot run".to_string()
-        })?;
-
-    load_model_provider_config(config, provider)
-}
-
-pub fn load_model_provider_config(
-    config: &Table,
-    provider: &str,
-) -> Result<ModelProviderConfig, Box<dyn Error>> {
+pub fn load_model_provider_config(provider: &str) -> Result<ModelProviderConfig, Box<dyn Error>> {
     match provider {
-        CODEX_PROVIDER_NAME => load_codex_runtime_config(config).map(ModelProviderConfig::Codex),
-        OPENCODE_PROVIDER_NAME => {
-            load_opencode_runtime_config(config).map(ModelProviderConfig::Opencode)
-        }
+        CODEX_PROVIDER_NAME => Ok(ModelProviderConfig::Codex(load_codex_runtime_config())),
+        OPENCODE_PROVIDER_NAME => Ok(ModelProviderConfig::Opencode(load_opencode_runtime_config())),
         _ => Err(format!(
             "unsupported provider `{provider}`; supported providers are `codex` and `opencode`"
         )
@@ -936,12 +848,6 @@ fn resolve_server_name(servers: &Table, requested_name: &str) -> Option<String> 
     servers.contains_key(&normalized).then_some(normalized)
 }
 
-fn set_optional_string(table: &mut Table, key: &str, value: Option<String>) {
-    if let Some(value) = value {
-        table.insert(key.to_string(), Value::String(value));
-    }
-}
-
 fn proxy_stdio_server(provider: &str) -> StdioServer {
     StdioServer {
         command: SELF_EXECUTABLE_NAME.to_string(),
@@ -1284,25 +1190,6 @@ fn validate_importable_opencode_server(
 
 fn looks_like_url(value: &str) -> bool {
     value.starts_with("http://") || value.starts_with("https://")
-}
-
-fn table_optional_string(
-    table: Option<&Table>,
-    key: &str,
-    env_key: Option<&str>,
-) -> Option<String> {
-    if let Some(value) = table
-        .and_then(|table| table.get(key))
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-    {
-        return Some(value.to_string());
-    }
-
-    env_key.and_then(|env_key| match env::var(env_key) {
-        Ok(value) if !value.is_empty() => Some(value),
-        _ => None,
-    })
 }
 
 #[cfg(test)]
@@ -2144,14 +2031,6 @@ mod tests {
     #[test]
     fn writes_stdio_server_to_config() {
         let config_path = unique_test_path("write-server-config.toml");
-        update_codex_config(
-            &config_path,
-            CodexConfigUpdate {
-                model: None,
-                make_default: true,
-            },
-        )
-        .unwrap();
         let server_name = add_server(
             &config_path,
             "ones",
@@ -2360,14 +2239,6 @@ mod tests {
     #[test]
     fn rejects_duplicate_server_name() {
         let config_path = unique_test_path("duplicate-server-config.toml");
-        update_codex_config(
-            &config_path,
-            CodexConfigUpdate {
-                model: None,
-                make_default: true,
-            },
-        )
-        .unwrap();
         add_server(
             &config_path,
             "ones",
@@ -2387,28 +2258,10 @@ mod tests {
     }
 
     #[test]
-    fn rejects_add_when_default_provider_is_missing() {
-        let config_path = unique_test_path("missing-default-provider.toml");
+    fn writes_server_without_provider_configuration() {
+        let config_path = unique_test_path("server-without-provider-config.toml");
 
-        let error = add_server(
-            &config_path,
-            "ones",
-            vec!["https://ones.com/mcp".to_string()],
-        )
-        .unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "missing `default_provider` in config; model-backed commands cannot run"
-        );
-        assert!(!config_path.exists());
-    }
-
-    #[test]
-    fn allows_import_when_default_provider_is_missing() {
-        let config_path = unique_test_path("import-without-default-provider.toml");
-
-        let server_name = import_server(
+        let server_name = add_server(
             &config_path,
             "ones",
             vec!["https://ones.com/mcp".to_string()],
@@ -2433,15 +2286,6 @@ mod tests {
     #[test]
     fn rejects_adding_self_as_server() {
         let config_path = unique_test_path("self-server-config.toml");
-        update_codex_config(
-            &config_path,
-            CodexConfigUpdate {
-                model: None,
-                make_default: true,
-            },
-        )
-        .unwrap();
-
         let error = add_server(
             &config_path,
             "proxy",
@@ -2454,109 +2298,12 @@ mod tests {
             "cannot add `msp mcp` as a managed server"
         );
 
-        fs::remove_file(config_path).unwrap();
+        assert!(!config_path.exists());
     }
 
     #[test]
-    fn updates_codex_config_with_partial_fields() {
-        let config_path = unique_test_path("codex-config.toml");
-        update_codex_config(
-            &config_path,
-            CodexConfigUpdate {
-                model: Some("gpt-5.2".to_string()),
-                make_default: false,
-            },
-        )
-        .unwrap();
-
-        let config = load_config_table(&config_path).unwrap();
-        let codex = config["codex"].as_table().unwrap();
-
-        assert_eq!(codex["model"].as_str(), Some("gpt-5.2"));
-
-        fs::remove_file(config_path).unwrap();
-    }
-
-    #[test]
-    fn updates_opencode_config_with_partial_fields() {
-        let config_path = unique_test_path("opencode-config.toml");
-        update_opencode_config(
-            &config_path,
-            OpencodeConfigUpdate {
-                model: Some("openai/gpt-5".to_string()),
-                make_default: false,
-            },
-        )
-        .unwrap();
-
-        let config = load_config_table(&config_path).unwrap();
-        let opencode = config["opencode"].as_table().unwrap();
-
-        assert_eq!(opencode["model"].as_str(), Some("openai/gpt-5"));
-
-        fs::remove_file(config_path).unwrap();
-    }
-
-    #[test]
-    fn sets_codex_as_default_provider_when_requested() {
-        let config_path = unique_test_path("codex-config-default.toml");
-        update_codex_config(
-            &config_path,
-            CodexConfigUpdate {
-                model: Some("gpt-5.2".to_string()),
-                make_default: true,
-            },
-        )
-        .unwrap();
-
-        let config = load_config_table(&config_path).unwrap();
-
-        assert_eq!(config["default_provider"].as_str(), Some("codex"));
-
-        fs::remove_file(config_path).unwrap();
-    }
-
-    #[test]
-    fn sets_opencode_as_default_provider_when_requested() {
-        let config_path = unique_test_path("opencode-config-default.toml");
-        update_opencode_config(
-            &config_path,
-            OpencodeConfigUpdate {
-                model: Some("openai/gpt-5".to_string()),
-                make_default: true,
-            },
-        )
-        .unwrap();
-
-        let config = load_config_table(&config_path).unwrap();
-
-        assert_eq!(config["default_provider"].as_str(), Some("opencode"));
-
-        fs::remove_file(config_path).unwrap();
-    }
-
-    #[test]
-    fn requires_default_provider_for_model_backed_runtime() {
-        let config: Table = toml::from_str("").unwrap();
-
-        let error = load_default_model_provider_config(&config).unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "missing `default_provider` in config; model-backed commands cannot run"
-        );
-    }
-
-    #[test]
-    fn rejects_unsupported_default_provider_for_model_backed_runtime() {
-        let config: Table = toml::from_str(
-            r#"
-                default_provider = "anthropic"
-            "#,
-        )
-        .unwrap();
-
-        let error = load_default_model_provider_config(&config).unwrap_err();
+    fn rejects_unsupported_provider_for_model_backed_runtime() {
+        let error = load_model_provider_config("anthropic").unwrap_err();
 
         assert_eq!(
             error.to_string(),
@@ -2565,15 +2312,8 @@ mod tests {
     }
 
     #[test]
-    fn loads_default_codex_provider_runtime_with_default_model() {
-        let config: Table = toml::from_str(
-            r#"
-                default_provider = "codex"
-            "#,
-        )
-        .unwrap();
-
-        let runtime = load_default_model_provider_config(&config).unwrap();
+    fn loads_codex_provider_runtime_with_default_model() {
+        let runtime = load_model_provider_config("codex").unwrap();
 
         match runtime {
             ModelProviderConfig::Codex(codex) => {
@@ -2586,15 +2326,8 @@ mod tests {
     }
 
     #[test]
-    fn loads_default_opencode_provider_runtime_with_default_model() {
-        let config: Table = toml::from_str(
-            r#"
-                default_provider = "opencode"
-            "#,
-        )
-        .unwrap();
-
-        let runtime = load_default_model_provider_config(&config).unwrap();
+    fn loads_opencode_provider_runtime_with_default_model() {
+        let runtime = load_model_provider_config("opencode").unwrap();
 
         match runtime {
             ModelProviderConfig::Opencode(opencode) => {
