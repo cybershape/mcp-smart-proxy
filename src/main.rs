@@ -13,9 +13,10 @@ mod types;
 
 use cli::{Cli, Command, ConfigCommand, ImportSource};
 use config::{
-    CodexConfigUpdate, OpenAiConfigUpdate, add_server, contains_server_name, list_servers,
-    load_codex_servers_for_import, load_config_table, load_default_model_provider_config,
-    remove_server, update_codex_config, update_openai_config,
+    CodexConfigUpdate, OpenAiConfigUpdate, OpencodeConfigUpdate, add_server,
+    contains_server_name, list_servers, load_codex_servers_for_import, load_config_table,
+    load_default_model_provider_config, load_opencode_servers_for_import, remove_server,
+    update_codex_config, update_openai_config, update_opencode_config,
 };
 use console::{describe_command, operation_error, print_app_error, print_app_event};
 use paths::expand_tilde;
@@ -197,6 +198,107 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 );
             }
         }
+        Some(Command::Import {
+            source: ImportSource::Opencode,
+        }) => {
+            let mut config = load_config_table(&config_path).map_err(|error| {
+                operation_error(
+                    "cli.import.opencode.validate_provider.load_config",
+                    format!("failed to load config from {}", config_path.display()),
+                    error,
+                )
+            })?;
+            let _ = load_default_model_provider_config(&config).map_err(|error| {
+                operation_error(
+                    "cli.import.opencode.validate_provider",
+                    format!(
+                        "failed to validate model provider before importing from OpenCode into {}",
+                        config_path.display()
+                    ),
+                    error,
+                )
+            })?;
+            let (opencode_config_path, import_plan) =
+                load_opencode_servers_for_import().map_err(|error| {
+                    operation_error(
+                        "cli.import.opencode.load_source",
+                        "failed to load importable MCP servers from OpenCode config",
+                        error,
+                    )
+                })?;
+
+            let mut imported_servers = Vec::new();
+            let mut skipped_existing_servers = Vec::new();
+            for server in import_plan.servers {
+                if contains_server_name(&config, &server.name) {
+                    skipped_existing_servers.push(server.name);
+                    continue;
+                }
+
+                let server_name =
+                    add_server(&config_path, &server.name, server.command).map_err(|error| {
+                        operation_error(
+                            "cli.import.opencode.add",
+                            format!(
+                                "failed to import MCP server `{}` from {} into {}",
+                                server.name,
+                                opencode_config_path.display(),
+                                config_path.display()
+                            ),
+                            error,
+                        )
+                    })?;
+                let reload_result =
+                    reload_server(&config_path, &server_name)
+                        .await
+                        .map_err(|error| {
+                            operation_error(
+                                "cli.import.opencode.reload",
+                                format!(
+                                    "failed to reload imported MCP server `{server_name}` from {}",
+                                    opencode_config_path.display()
+                                ),
+                                error,
+                            )
+                        })?;
+                imported_servers.push(format!(
+                    "Imported `{server_name}` and cached tools at {}",
+                    reload_result.cache_path.display()
+                ));
+                config = load_config_table(&config_path).map_err(|error| {
+                    operation_error(
+                        "cli.import.opencode.refresh_config",
+                        format!("failed to refresh config from {}", config_path.display()),
+                        error,
+                    )
+                })?;
+            }
+
+            print_app_event(
+                "cli.import.opencode",
+                format!(
+                    "Imported {} MCP server(s) from {} into {}",
+                    imported_servers.len(),
+                    opencode_config_path.display(),
+                    config_path.display()
+                ),
+            );
+            for message in imported_servers {
+                print_app_event("cli.import.opencode.server", message);
+            }
+            for name in skipped_existing_servers {
+                print_app_event(
+                    "cli.import.opencode.skipped",
+                    format!("Skipped existing server `{name}`"),
+                );
+            }
+            for name in import_plan.skipped_self_servers {
+                print_app_event(
+                    "cli.import.opencode.skipped",
+                    format!("Skipped self-referential server `{name}`"),
+                );
+            }
+        }
         Some(Command::Remove { name }) => {
             let removed = remove_server(&config_path, &name).map_err(|error| {
                 operation_error(
@@ -374,6 +476,32 @@ async fn run() -> Result<(), Box<dyn Error>> {
             print_app_event(
                 "cli.config.codex",
                 format!("Updated Codex config in {}", config_path.display()),
+            );
+        }
+        Some(Command::Config {
+            command:
+                ConfigCommand::Opencode {
+                    model,
+                    make_default,
+                },
+        }) => {
+            update_opencode_config(
+                &config_path,
+                OpencodeConfigUpdate {
+                    model,
+                    make_default,
+                },
+            )
+            .map_err(|error| {
+                operation_error(
+                    "cli.config.opencode",
+                    format!("failed to update OpenCode config in {}", config_path.display()),
+                    error,
+                )
+            })?;
+            print_app_event(
+                "cli.config.opencode",
+                format!("Updated OpenCode config in {}", config_path.display()),
             );
         }
         None => {

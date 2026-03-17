@@ -21,9 +21,15 @@ pub struct CodexRuntimeConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct OpencodeRuntimeConfig {
+    pub model: String,
+}
+
+#[derive(Debug, Clone)]
 pub enum ModelProviderConfig {
     OpenAi(OpenAiRuntimeConfig),
     Codex(CodexRuntimeConfig),
+    Opencode(OpencodeRuntimeConfig),
 }
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]

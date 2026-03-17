@@ -8,7 +8,7 @@ Running `msp` without any arguments prints the top-level command help.
 It does simple things:
 
 1. It connects to a configured MCP server and caches its tool metadata.
-2. It generates a one-sentence summary of the toolset using a configured AI provider, which can be either the OpenAI API or the Codex CLI.
+2. It generates a one-sentence summary of the toolset using a configured AI provider, which can be the OpenAI API, the Codex CLI, or the OpenCode CLI.
 3. It starts a stdio MCP server that exposes the cached toolsets through a small proxy interface.
 
 ## What It Does
@@ -25,6 +25,7 @@ This lets Agents see only the MCP server's name/one-sentence summary first. When
 - Homebrew for installation on macOS and Linux
 - An OpenAI-compatible API key for `reload` when using the `openai` provider
 - The `codex` CLI for `reload` when using the `codex` provider
+- The `opencode` CLI for `reload` when using the `opencode` provider
 - Any downstream MCP servers must use stdio transport. If it's http transport, msp will add `npx -y mcp-remote` in front of the URL to convert it to stdio
 
 ## Install
@@ -120,6 +121,9 @@ model = "gpt-5.2"
 [codex]
 model = "gpt-5.2"
 
+[opencode]
+model = "openai/gpt-5.2"
+
 [servers.github]
 transport = "stdio"
 command = "npx"
@@ -137,6 +141,7 @@ Notes:
 - `openai.key` can also come from `OPENAI_API_KEY`.
 - `openai.baseurl` can also come from `OPENAI_API_BASE`.
 - If `openai.model` or `codex.model` is missing, the default is `gpt-5.2`.
+- If `opencode.model` is missing, the default is `openai/gpt-5.2`.
 
 ## Commands
 
@@ -172,6 +177,22 @@ msp config codex --default
 ```
 
 `codex.model` is optional and defaults to `gpt-5.2`. When `default_provider = "codex"`, model-backed commands call `codex exec` to generate the same one-sentence toolset summary used by the OpenAI provider.
+
+### Configure OpenCode settings
+
+```bash
+msp config opencode --model openai/gpt-5.2
+```
+
+Running `msp config opencode` without any flags prints the command help instead of writing an empty update.
+
+Optional fields:
+
+```bash
+msp config opencode --default
+```
+
+`opencode.model` is optional and defaults to `openai/gpt-5.2`. When `default_provider = "opencode"`, model-backed commands call `opencode run` to generate the same one-sentence toolset summary used by the other providers.
 
 ### Add a server
 
@@ -223,6 +244,26 @@ If a Codex server launches this proxy with `msp mcp`, that entry is also skipped
 Only Codex MCP servers defined with `command` and optional string `args` are importable. Entries that rely on other settings such as `env`, `cwd`, or non-stdio transports are rejected instead of being imported partially.
 
 Running `msp import` without a source prints the command help instead of a missing-argument error.
+
+### Import servers from OpenCode
+
+```bash
+msp import opencode
+```
+
+This command:
+
+1. checks that a supported `default_provider` is already configured
+2. reads OpenCode MCP servers from `~/.config/opencode/opencode.json`
+3. imports each server as if you ran `msp add <name> <command...>` for it
+4. reloads every imported server immediately
+
+`import opencode` fails before making changes if `default_provider` is missing.
+
+If an OpenCode server name already exists in the `msp` config after normalization, that server is skipped.
+If an OpenCode server launches this proxy with `msp mcp`, that entry is also skipped during import.
+
+Only OpenCode MCP servers defined with a string-array `command` and optional `type = "local"` are importable. Entries that rely on other settings or use non-local server types are rejected instead of being imported partially.
 
 ### List configured servers
 
@@ -316,6 +357,13 @@ Importing existing Codex MCP servers:
 ```bash
 msp config codex --default
 msp import codex
+```
+
+Importing existing OpenCode MCP servers:
+
+```bash
+msp config opencode --default
+msp import opencode
 ```
 
 Add as MCP server in Codex:

@@ -7,14 +7,18 @@ use toml::{Table, Value};
 
 use crate::paths::{cache_file_path, expand_tilde, sanitize_name};
 use crate::types::{
-    CachedTools, CodexRuntimeConfig, ConfiguredServer, ModelProviderConfig, OpenAiRuntimeConfig,
+    CachedTools, CodexRuntimeConfig, ConfiguredServer, ModelProviderConfig,
+    OpenAiRuntimeConfig, OpencodeRuntimeConfig,
 };
 
-const DEFAULT_OPENAI_MODEL: &str = "gpt-5.2";
+const DEFAULT_MODEL: &str = "gpt-5.2";
+const DEFAULT_OPENCODE_MODEL: &str = "openai/gpt-5.2";
 const DEFAULT_CODEX_CONFIG_PATH: &str = "~/.codex/config.toml";
+const DEFAULT_OPENCODE_CONFIG_PATH: &str = "~/.config/opencode/opencode.json";
 const CODEX_HOME_ENV: &str = "CODEX_HOME";
 const DEFAULT_PROVIDER_KEY: &str = "default_provider";
 const CODEX_PROVIDER_NAME: &str = "codex";
+const OPENCODE_PROVIDER_NAME: &str = "opencode";
 const OPENAI_API_BASE_ENV: &str = "OPENAI_API_BASE";
 const OPENAI_API_KEY_ENV: &str = "OPENAI_API_KEY";
 const OPENAI_PROVIDER_NAME: &str = "openai";
@@ -56,7 +60,7 @@ pub struct ListedServer {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CodexImportPlan {
+pub struct ImportPlan {
     pub servers: Vec<ImportableServer>,
     pub skipped_self_servers: Vec<String>,
 }
@@ -76,6 +80,11 @@ pub struct OpenAiConfigUpdate {
 }
 
 pub struct CodexConfigUpdate {
+    pub model: Option<String>,
+    pub make_default: bool,
+}
+
+pub struct OpencodeConfigUpdate {
     pub model: Option<String>,
     pub make_default: bool,
 }
@@ -343,9 +352,39 @@ pub fn update_codex_config(
     Ok(())
 }
 
-pub fn load_codex_servers_for_import() -> Result<(PathBuf, CodexImportPlan), Box<dyn Error>> {
+pub fn update_opencode_config(
+    config_path: &Path,
+    update: OpencodeConfigUpdate,
+) -> Result<(), Box<dyn Error>> {
+    let mut config = load_config_table(config_path)?;
+    let opencode_value = config
+        .entry(OPENCODE_PROVIDER_NAME)
+        .or_insert_with(|| Value::Table(Table::new()));
+    let opencode = opencode_value
+        .as_table_mut()
+        .ok_or_else(|| "`opencode` in config must be a table".to_string())?;
+
+    set_optional_string(opencode, "model", update.model);
+    if update.make_default {
+        config.insert(
+            DEFAULT_PROVIDER_KEY.to_string(),
+            Value::String(OPENCODE_PROVIDER_NAME.to_string()),
+        );
+    }
+
+    save_config_table(config_path, &config)?;
+    Ok(())
+}
+
+pub fn load_codex_servers_for_import() -> Result<(PathBuf, ImportPlan), Box<dyn Error>> {
     let path = codex_config_path()?;
     let plan = load_codex_servers_for_import_from_path(&path)?;
+    Ok((path, plan))
+}
+
+pub fn load_opencode_servers_for_import() -> Result<(PathBuf, ImportPlan), Box<dyn Error>> {
+    let path = opencode_config_path()?;
+    let plan = load_opencode_servers_for_import_from_path(&path)?;
     Ok((path, plan))
 }
 
@@ -354,8 +393,7 @@ pub fn load_openai_runtime_config(config: &Table) -> Result<OpenAiRuntimeConfig,
 
     let baseurl = table_optional_string(table, "baseurl", Some(OPENAI_API_BASE_ENV));
     let key = openai_string(table, "key", Some(OPENAI_API_KEY_ENV))?;
-    let model = table_optional_string(table, "model", None)
-        .unwrap_or_else(|| DEFAULT_OPENAI_MODEL.to_string());
+    let model = table_optional_string(table, "model", None).unwrap_or_else(|| DEFAULT_MODEL.to_string());
 
     Ok(OpenAiRuntimeConfig {
         baseurl,
@@ -366,10 +404,19 @@ pub fn load_openai_runtime_config(config: &Table) -> Result<OpenAiRuntimeConfig,
 
 pub fn load_codex_runtime_config(config: &Table) -> Result<CodexRuntimeConfig, Box<dyn Error>> {
     let table = config.get(CODEX_PROVIDER_NAME).and_then(Value::as_table);
-    let model = table_optional_string(table, "model", None)
-        .unwrap_or_else(|| DEFAULT_OPENAI_MODEL.to_string());
+    let model = table_optional_string(table, "model", None).unwrap_or_else(|| DEFAULT_MODEL.to_string());
 
     Ok(CodexRuntimeConfig { model })
+}
+
+pub fn load_opencode_runtime_config(
+    config: &Table,
+) -> Result<OpencodeRuntimeConfig, Box<dyn Error>> {
+    let table = config.get(OPENCODE_PROVIDER_NAME).and_then(Value::as_table);
+    let model = table_optional_string(table, "model", None)
+        .unwrap_or_else(|| DEFAULT_OPENCODE_MODEL.to_string());
+
+    Ok(OpencodeRuntimeConfig { model })
 }
 
 pub fn load_default_model_provider_config(
@@ -386,8 +433,11 @@ pub fn load_default_model_provider_config(
     match provider {
         OPENAI_PROVIDER_NAME => load_openai_runtime_config(config).map(ModelProviderConfig::OpenAi),
         CODEX_PROVIDER_NAME => load_codex_runtime_config(config).map(ModelProviderConfig::Codex),
+        OPENCODE_PROVIDER_NAME => {
+            load_opencode_runtime_config(config).map(ModelProviderConfig::Opencode)
+        }
         _ => Err(format!(
-            "unsupported `default_provider` `{provider}`; supported providers are `openai` and `codex`"
+            "unsupported `default_provider` `{provider}`; supported providers are `openai`, `codex`, and `opencode`"
         )
         .into()),
     }
@@ -438,7 +488,11 @@ fn codex_config_path() -> Result<PathBuf, Box<dyn Error>> {
     expand_tilde(Path::new(DEFAULT_CODEX_CONFIG_PATH))
 }
 
-fn load_codex_servers_for_import_from_path(path: &Path) -> Result<CodexImportPlan, Box<dyn Error>> {
+fn opencode_config_path() -> Result<PathBuf, Box<dyn Error>> {
+    expand_tilde(Path::new(DEFAULT_OPENCODE_CONFIG_PATH))
+}
+
+fn load_codex_servers_for_import_from_path(path: &Path) -> Result<ImportPlan, Box<dyn Error>> {
     if !path.exists() {
         return Err(format!("Codex config not found at {}", path.display()).into());
     }
@@ -506,7 +560,75 @@ fn load_codex_servers_for_import_from_path(path: &Path) -> Result<CodexImportPla
         });
     }
 
-    Ok(CodexImportPlan {
+    Ok(ImportPlan {
+        servers: importable_servers,
+        skipped_self_servers,
+    })
+}
+
+fn load_opencode_servers_for_import_from_path(path: &Path) -> Result<ImportPlan, Box<dyn Error>> {
+    if !path.exists() {
+        return Err(format!("OpenCode config not found at {}", path.display()).into());
+    }
+
+    let contents = fs::read_to_string(path)?;
+    let config: serde_json::Value = serde_json::from_str(&contents)?;
+    let servers = config
+        .get("mcp")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| {
+            format!(
+                "no `mcp` object found in OpenCode config {}",
+                path.display()
+            )
+        })?;
+
+    if servers.is_empty() {
+        return Err(format!("no MCP servers found in OpenCode config {}", path.display()).into());
+    }
+
+    let mut names = servers.keys().cloned().collect::<Vec<_>>();
+    names.sort();
+
+    let mut importable_servers = Vec::new();
+    let mut skipped_self_servers = Vec::new();
+
+    for name in names {
+        let server = servers[&name]
+            .as_object()
+            .ok_or_else(|| format!("OpenCode MCP server `{name}` must be an object"))?;
+        validate_importable_opencode_server(&name, server)?;
+
+        let command = server
+            .get("command")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| format!("OpenCode MCP server `{name}` is missing `command`"))?;
+        if command.is_empty() {
+            return Err(format!("OpenCode MCP server `{name}` has an empty `command` array").into());
+        }
+
+        let raw_command = command
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(ToOwned::to_owned)
+                    .ok_or_else(|| format!("OpenCode MCP server `{name}` contains a non-string command part"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        if is_self_server_command(&raw_command) {
+            skipped_self_servers.push(name);
+            continue;
+        }
+
+        importable_servers.push(ImportableServer {
+            name,
+            command: raw_command,
+        });
+    }
+
+    Ok(ImportPlan {
         servers: importable_servers,
         skipped_self_servers,
     })
@@ -579,6 +701,38 @@ fn validate_importable_codex_server(name: &str, server: &Table) -> Result<(), Bo
         unsupported_keys.join(", ")
     )
     .into())
+}
+
+fn validate_importable_opencode_server(
+    name: &str,
+    server: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), Box<dyn Error>> {
+    let unsupported_keys = server
+        .keys()
+        .filter(|key| !matches!(key.as_str(), "command" | "type"))
+        .map(|key| format!("`{key}`"))
+        .collect::<Vec<_>>();
+
+    if !unsupported_keys.is_empty() {
+        return Err(format!(
+            "OpenCode MCP server `{name}` uses unsupported settings {}; only `command` and optional `type` can be imported",
+            unsupported_keys.join(", ")
+        )
+        .into());
+    }
+
+    let Some(server_type) = server.get("type") else {
+        return Ok(());
+    };
+
+    match server_type.as_str() {
+        Some("local") => Ok(()),
+        Some(other) => Err(format!(
+            "OpenCode MCP server `{name}` uses unsupported type `{other}`, only `local` can be imported"
+        )
+        .into()),
+        None => Err(format!("OpenCode MCP server `{name}` has a non-string `type` field").into()),
+    }
 }
 
 fn looks_like_url(value: &str) -> bool {
@@ -783,6 +937,187 @@ mod tests {
             ]
         );
         assert!(plan.skipped_self_servers.is_empty());
+
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
+    fn loads_opencode_servers_for_import_from_path() {
+        let config_path = unique_test_path("opencode-import.json");
+        fs::write(
+            &config_path,
+            r#"{
+                "mcp": {
+                    "beta": {
+                        "command": ["uvx", "beta-server"],
+                        "type": "local"
+                    },
+                    "alpha": {
+                        "command": ["npx", "-y", "@modelcontextprotocol/server-github"],
+                        "type": "local"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let plan = load_opencode_servers_for_import_from_path(&config_path).unwrap();
+
+        assert_eq!(
+            plan.servers,
+            vec![
+                ImportableServer {
+                    name: "alpha".to_string(),
+                    command: vec![
+                        "npx".to_string(),
+                        "-y".to_string(),
+                        "@modelcontextprotocol/server-github".to_string(),
+                    ],
+                },
+                ImportableServer {
+                    name: "beta".to_string(),
+                    command: vec!["uvx".to_string(), "beta-server".to_string()],
+                },
+            ]
+        );
+        assert!(plan.skipped_self_servers.is_empty());
+
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
+    fn skips_self_server_when_loading_opencode_import_plan() {
+        let config_path = unique_test_path("opencode-import-self.json");
+        fs::write(
+            &config_path,
+            r#"{
+                "mcp": {
+                    "proxy": {
+                        "command": ["msp", "mcp"],
+                        "type": "local"
+                    },
+                    "github": {
+                        "command": ["npx", "-y", "@modelcontextprotocol/server-github"],
+                        "type": "local"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let plan = load_opencode_servers_for_import_from_path(&config_path).unwrap();
+
+        assert_eq!(
+            plan.servers,
+            vec![ImportableServer {
+                name: "github".to_string(),
+                command: vec![
+                    "npx".to_string(),
+                    "-y".to_string(),
+                    "@modelcontextprotocol/server-github".to_string(),
+                ],
+            }]
+        );
+        assert_eq!(plan.skipped_self_servers, vec!["proxy".to_string()]);
+
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
+    fn rejects_opencode_import_when_server_uses_unsupported_fields() {
+        let config_path = unique_test_path("opencode-import-unsupported.json");
+        fs::write(
+            &config_path,
+            r#"{
+                "mcp": {
+                    "demo": {
+                        "command": ["npx", "-y", "demo-server"],
+                        "type": "local",
+                        "env": {
+                            "DEMO_TOKEN": "secret"
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let error = load_opencode_servers_for_import_from_path(&config_path).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "OpenCode MCP server `demo` uses unsupported settings `env`; only `command` and optional `type` can be imported"
+        );
+
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
+    fn rejects_opencode_import_when_server_type_is_not_local() {
+        let config_path = unique_test_path("opencode-import-remote.json");
+        fs::write(
+            &config_path,
+            r#"{
+                "mcp": {
+                    "demo": {
+                        "command": ["npx", "-y", "demo-server"],
+                        "type": "remote"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let error = load_opencode_servers_for_import_from_path(&config_path).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "OpenCode MCP server `demo` uses unsupported type `remote`, only `local` can be imported"
+        );
+
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
+    fn rejects_opencode_import_when_command_is_not_a_string_array() {
+        let config_path = unique_test_path("opencode-import-invalid-command.json");
+        fs::write(
+            &config_path,
+            r#"{
+                "mcp": {
+                    "demo": {
+                        "command": ["npx", 1],
+                        "type": "local"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let error = load_opencode_servers_for_import_from_path(&config_path).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "OpenCode MCP server `demo` contains a non-string command part"
+        );
+
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
+    fn rejects_opencode_import_when_no_servers_are_configured() {
+        let config_path = unique_test_path("opencode-import-empty.json");
+        fs::write(&config_path, "{}").unwrap();
+
+        let error = load_opencode_servers_for_import_from_path(&config_path).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "no `mcp` object found in OpenCode config {}",
+                config_path.display()
+            )
+        );
 
         fs::remove_file(config_path).unwrap();
     }
@@ -1227,6 +1562,26 @@ mod tests {
     }
 
     #[test]
+    fn updates_opencode_config_with_partial_fields() {
+        let config_path = unique_test_path("opencode-config.toml");
+        update_opencode_config(
+            &config_path,
+            OpencodeConfigUpdate {
+                model: Some("openai/gpt-5".to_string()),
+                make_default: false,
+            },
+        )
+        .unwrap();
+
+        let config = load_config_table(&config_path).unwrap();
+        let opencode = config["opencode"].as_table().unwrap();
+
+        assert_eq!(opencode["model"].as_str(), Some("openai/gpt-5"));
+
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
     fn preserves_existing_openai_fields_when_updating_subset() {
         let config_path = unique_test_path("openai-config-preserve.toml");
         update_openai_config(
@@ -1299,6 +1654,25 @@ mod tests {
         let config = load_config_table(&config_path).unwrap();
 
         assert_eq!(config["default_provider"].as_str(), Some("codex"));
+
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
+    fn sets_opencode_as_default_provider_when_requested() {
+        let config_path = unique_test_path("opencode-config-default.toml");
+        update_opencode_config(
+            &config_path,
+            OpencodeConfigUpdate {
+                model: Some("openai/gpt-5".to_string()),
+                make_default: true,
+            },
+        )
+        .unwrap();
+
+        let config = load_config_table(&config_path).unwrap();
+
+        assert_eq!(config["default_provider"].as_str(), Some("opencode"));
 
         fs::remove_file(config_path).unwrap();
     }
@@ -1390,7 +1764,7 @@ mod tests {
 
             assert_eq!(runtime.baseurl, None);
             assert_eq!(runtime.key, "sk-env");
-            assert_eq!(runtime.model, DEFAULT_OPENAI_MODEL);
+            assert_eq!(runtime.model, DEFAULT_MODEL);
         });
     }
 
@@ -1450,7 +1824,7 @@ mod tests {
 
             assert_eq!(
                 error.to_string(),
-                "unsupported `default_provider` `anthropic`; supported providers are `openai` and `codex`"
+                "unsupported `default_provider` `anthropic`; supported providers are `openai`, `codex`, and `opencode`"
             );
         });
     }
@@ -1475,7 +1849,9 @@ mod tests {
                     assert_eq!(openai.model, "gpt-4.1-mini");
                     assert_eq!(openai.key, "sk-env");
                 }
-                ModelProviderConfig::Codex(_) => panic!("expected openai provider"),
+                ModelProviderConfig::Codex(_) | ModelProviderConfig::Opencode(_) => {
+                    panic!("expected openai provider")
+                }
             }
         });
     }
@@ -1493,9 +1869,32 @@ mod tests {
 
         match runtime {
             ModelProviderConfig::Codex(codex) => {
-                assert_eq!(codex.model, DEFAULT_OPENAI_MODEL);
+                assert_eq!(codex.model, DEFAULT_MODEL);
             }
-            ModelProviderConfig::OpenAi(_) => panic!("expected codex provider"),
+            ModelProviderConfig::OpenAi(_) | ModelProviderConfig::Opencode(_) => {
+                panic!("expected codex provider")
+            }
+        }
+    }
+
+    #[test]
+    fn loads_default_opencode_provider_runtime_with_default_model() {
+        let config: Table = toml::from_str(
+            r#"
+                default_provider = "opencode"
+            "#,
+        )
+        .unwrap();
+
+        let runtime = load_default_model_provider_config(&config).unwrap();
+
+        match runtime {
+            ModelProviderConfig::Opencode(opencode) => {
+                assert_eq!(opencode.model, DEFAULT_OPENCODE_MODEL);
+            }
+            ModelProviderConfig::OpenAi(_) | ModelProviderConfig::Codex(_) => {
+                panic!("expected opencode provider")
+            }
         }
     }
 

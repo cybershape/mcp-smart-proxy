@@ -24,7 +24,7 @@ use crate::console::{
 use crate::paths::{cache_file_path, unix_epoch_ms};
 use crate::types::{
     CachedTools, CodexRuntimeConfig, ConfiguredServer, ModelProviderConfig, OpenAiRuntimeConfig,
-    ToolSnapshot, tool_snapshot,
+    OpencodeRuntimeConfig, ToolSnapshot, tool_snapshot,
 };
 
 pub struct ReloadResult {
@@ -224,6 +224,9 @@ async fn summarize_tools(
     match provider {
         ModelProviderConfig::OpenAi(openai) => summarize_tools_with_openai(openai, &prompt).await,
         ModelProviderConfig::Codex(codex) => summarize_tools_with_codex(codex, &prompt).await,
+        ModelProviderConfig::Opencode(opencode) => {
+            summarize_tools_with_opencode(opencode, &prompt).await
+        }
     }
 }
 
@@ -411,6 +414,96 @@ async fn summarize_tools_with_codex(
     non_empty_summary(Some(output.as_str()), "Codex returned an empty summary")
 }
 
+async fn summarize_tools_with_opencode(
+    opencode: &OpencodeRuntimeConfig,
+    prompt: &str,
+) -> Result<String, Box<dyn Error>> {
+    let workdir = opencode_workdir_path().map_err(|error| {
+        operation_error(
+            "reload.summarize_tools.opencode.workdir_path",
+            "failed to compute a temporary workdir path for `opencode run`",
+            error,
+        )
+    })?;
+    fs::create_dir(&workdir).map_err(|error| {
+        operation_error(
+            "reload.summarize_tools.opencode.create_workdir",
+            format!("failed to create temporary workdir {}", workdir.display()),
+            Box::new(error),
+        )
+    })?;
+
+    let command_args = vec![
+        "run".to_string(),
+        "--model".to_string(),
+        opencode.model.clone(),
+        "--dir".to_string(),
+        workdir.display().to_string(),
+        "--format".to_string(),
+        "default".to_string(),
+        prompt.to_string(),
+    ];
+    let command_line = describe_command("opencode", &command_args);
+
+    let output = tokio::process::Command::new("opencode")
+        .current_dir(&workdir)
+        .env("NO_COLOR", "1")
+        .args(&command_args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|error| {
+            print_external_command_failure(
+                "reload.summarize_tools.opencode",
+                "opencode",
+                &command_line,
+                "wait-failed",
+            );
+            let _ = fs::remove_dir(&workdir);
+            operation_error(
+                "reload.summarize_tools.opencode.wait",
+                format!("failed while waiting for external command `{command_line}`"),
+                Box::new(error),
+            )
+        })?;
+
+    if !output.status.success() {
+        print_external_command_failure(
+            "reload.summarize_tools.opencode",
+            "opencode",
+            &command_line,
+            &output.status.to_string(),
+        );
+        print_external_output_block(
+            "reload.summarize_tools.opencode",
+            "opencode",
+            &command_line,
+            "stdout",
+            &String::from_utf8_lossy(&output.stdout),
+        );
+        print_external_output_block(
+            "reload.summarize_tools.opencode",
+            "opencode",
+            &command_line,
+            "stderr",
+            &String::from_utf8_lossy(&output.stderr),
+        );
+        let _ = fs::remove_dir(&workdir);
+        return Err(message_error(
+            "reload.summarize_tools.opencode.exit_status",
+            format!("`opencode run` exited unsuccessfully while summarizing tools; status={}", output.status),
+        ));
+    }
+
+    let summary = non_empty_summary(
+        Some(String::from_utf8_lossy(&output.stdout).as_ref()),
+        "OpenCode returned an empty summary",
+    );
+    let _ = fs::remove_dir(&workdir);
+    summary
+}
+
 async fn print_external_command_failure_async(
     stage: &str,
     label: &str,
@@ -434,6 +527,14 @@ fn codex_output_path() -> Result<PathBuf, Box<dyn Error>> {
 fn codex_workdir_path() -> Result<PathBuf, Box<dyn Error>> {
     Ok(env::temp_dir().join(format!(
         "mcp-smart-proxy-codex-workdir-{}-{}",
+        std::process::id(),
+        unix_epoch_ms()?
+    )))
+}
+
+fn opencode_workdir_path() -> Result<PathBuf, Box<dyn Error>> {
+    Ok(env::temp_dir().join(format!(
+        "mcp-smart-proxy-opencode-workdir-{}-{}",
         std::process::id(),
         unix_epoch_ms()?
     )))
@@ -545,6 +646,19 @@ mod tests {
                 .and_then(|name| name.to_str())
                 .unwrap()
                 .starts_with("mcp-smart-proxy-codex-workdir-")
+        );
+    }
+
+    #[test]
+    fn opencode_workdir_path_is_created_in_temp_dir() {
+        let path = opencode_workdir_path().unwrap();
+
+        assert!(path.starts_with(env::temp_dir()));
+        assert!(
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap()
+                .starts_with("mcp-smart-proxy-opencode-workdir-")
         );
     }
 

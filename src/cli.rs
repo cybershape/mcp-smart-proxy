@@ -49,6 +49,7 @@ pub enum Command {
 #[derive(Debug, Clone, ValueEnum)]
 pub enum ImportSource {
     Codex,
+    Opencode,
 }
 
 #[derive(Debug, Subcommand)]
@@ -68,6 +69,14 @@ pub enum ConfigCommand {
     /// Update Codex settings.
     #[command(arg_required_else_help = true)]
     Codex {
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long = "default")]
+        make_default: bool,
+    },
+    /// Update OpenCode settings.
+    #[command(arg_required_else_help = true)]
+    Opencode {
         #[arg(long)]
         model: Option<String>,
         #[arg(long = "default")]
@@ -113,6 +122,16 @@ mod tests {
     #[test]
     fn config_codex_without_flags_shows_help() {
         let error = Cli::try_parse_from(["msp", "config", "codex"]).unwrap_err();
+
+        assert_eq!(
+            error.kind(),
+            ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        );
+    }
+
+    #[test]
+    fn config_opencode_without_flags_shows_help() {
+        let error = Cli::try_parse_from(["msp", "config", "opencode"]).unwrap_err();
 
         assert_eq!(
             error.kind(),
