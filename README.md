@@ -25,6 +25,7 @@ Your Agents see only these two tools. When they want to use a tool from a MCP se
 - Homebrew for installation on macOS and Linux
 - The `codex` CLI for summary using the `codex` provider
 - The `opencode` CLI for summary using the `opencode` provider
+- `npx` for running `mcp-remote` when adding http URLs as MCP servers
 - Any downstream MCP servers must use stdio transport. If it's http transport, msp will add `npx -y mcp-remote` in front of the URL to convert it to stdio
 
 ## Install
