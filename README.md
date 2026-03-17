@@ -1,6 +1,6 @@
-# mcp-smart-proxy
+# MSP (MCP Smart Proxy)
 
-`mcp-smart-proxy` is a small Rust CLI that helps an AI work with multiple MCP servers through one proxy server. By proxying multiple downstream MCP servers, it can significantly reduce the number of tools an Agent sees and reduce the cost and token usage wasted in unused tools.
+`msp` is a small Rust CLI that helps an AI work with multiple MCP servers through one proxy server. By proxying multiple downstream MCP servers, it can significantly reduce the number of tools an Agent sees and reduce the cost and token usage wasted in unused tools.
 
 The installed binary name is `msp`.
 Running `msp` without any arguments prints the top-level command help.
@@ -11,14 +11,14 @@ It does simple things:
 2. It generates a one-sentence summary of the toolset using a configured AI provider, which can be the Codex CLI or the OpenCode CLI.
 3. It starts a stdio MCP server that exposes the cached toolsets through a small proxy interface.
 
-## What It Does
+## How it works
 
 The proxy server currently exposes two tools:
 
-- `activate_external_mcp`: the description of this tool contains the MCP server name and the one-sentence summary of its toolset. Calling this tool returns the list of tools from that downstream MCP server.
+- `activate_external_mcp`: the description of this tool contains all the MCP servers' name and the one-sentence summary of each one's toolset. Calling this tool with MCP server name as argument returns the list of tools from that downstream MCP server.
 - `call_tool_in_external_mcp`: calls one downstream tool by external MCP server name and tool name.
 
-This lets Agents see only the MCP server's name/one-sentence summary first. When they want to use a tool from that server, they call `activate_external_mcp` to see the list of tools. Then they can call a specific tool with `call_tool_in_external_mcp`.
+Your Agents see only these two tools. When they want to use a tool from a MCP server, they call `activate_external_mcp` to see the list of tools. Then they can call a specific tool with `call_tool_in_external_mcp`.
 
 ## Requirements
 
@@ -41,16 +41,26 @@ After installation, run:
 msp
 ```
 
-## Build
+## Quick Start
+
+For a really quick start, if you have codex installed and configured with some MCP servers, you can just run:
 
 ```bash
-cargo build --bin msp
+msp import codex --replace
 ```
 
-Run the CLI during development with:
+This command imports all of your Codex MCP servers into `msp`, replaces all MCP servers in Codex with `msp mcp --provider codex`, and backs up your original Codex MCP server config to `~/.codex/config.msp-backup.toml`.
+
+If you want to restore your original Codex MCP servers, run:
 
 ```bash
-cargo run -- --help
+msp restore codex
+```
+
+After that, when you want to add a new MCP server, run:
+
+```bash
+msp add --provider codex <mcp server name> <command>
 ```
 
 ## Console Output
