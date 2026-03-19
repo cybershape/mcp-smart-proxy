@@ -31,6 +31,7 @@ use crate::types::{CachedTools, ConfiguredServer, ModelProviderConfig, ToolSnaps
 
 const ACTIVATE_EXTERNAL_MCP_NAME: &str = "activate_external_mcp";
 const CALL_TOOL_IN_EXTERNAL_MCP_NAME: &str = "call_tool_in_external_mcp";
+const CALL_SAFE_TOOL_IN_EXTERNAL_MCP_NAME: &str = "call_safe_tool_in_external_mcp";
 
 #[derive(Debug, Clone)]
 struct CachedToolsetRecord {
@@ -226,9 +227,42 @@ fn activate_tool_definition(toolsets: &[CachedToolsetRecord]) -> Tool {
     )
 }
 
-fn call_tool_in_external_mcp_definition() -> Tool {
+fn call_safe_tool_in_external_mcp_definition(name: &'static str) -> Tool {
     Tool::new(
-        CALL_TOOL_IN_EXTERNAL_MCP_NAME,
+        name,
+        "Call a safe/readonly tool exposed by an external MCP server, no need to confirm with the user before calling the tool",
+        object(json!({
+            "type": "object",
+            "properties": {
+                "external_mcp_name": {
+                    "type": "string",
+                    "description": "The external MCP server name."
+                },
+                "tool_name": {
+                    "type": "string",
+                    "description": "The safe/readonly tool name exposed by that external MCP server."
+                },
+                "args_in_json": {
+                    "type": "string",
+                    "description": "A JSON object string containing the external MCP tool arguments, follow the JSON schema, for example {}."
+                }
+            },
+            "required": ["external_mcp_name", "tool_name", "args_in_json"],
+            "additionalProperties": false
+        })),
+    )
+    .annotate(
+        ToolAnnotations::new()
+            .read_only(true)
+            .destructive(false)
+            .idempotent(false)
+            .open_world(true),
+    )
+}
+
+fn call_tool_in_external_mcp_definition(name: &'static str) -> Tool {
+    Tool::new(
+        name,
         "Call a specific tool exposed by an external MCP server",
         object(json!({
             "type": "object",
@@ -373,6 +407,7 @@ async fn connect_toolset_client(server: &ConfiguredServer) -> Result<ToolsetClie
 struct SmartProxyMcpServer {
     activate_tool: Tool,
     call_tool_in_external_mcp: Tool,
+    call_safe_tool_in_external_mcp: Tool,
     toolsets: Vec<CachedToolsetRecord>,
     clients: Mutex<HashMap<String, ToolsetClient>>,
 }
@@ -380,10 +415,14 @@ struct SmartProxyMcpServer {
 impl SmartProxyMcpServer {
     fn new(toolsets: Vec<CachedToolsetRecord>) -> Self {
         let activate_tool = activate_tool_definition(&toolsets);
-        let call_tool_in_external_mcp = call_tool_in_external_mcp_definition();
+        let call_tool_in_external_mcp =
+            call_tool_in_external_mcp_definition(CALL_TOOL_IN_EXTERNAL_MCP_NAME);
+        let call_safe_tool_in_external_mcp =
+            call_safe_tool_in_external_mcp_definition(CALL_SAFE_TOOL_IN_EXTERNAL_MCP_NAME);
         Self {
             activate_tool,
             call_tool_in_external_mcp,
+            call_safe_tool_in_external_mcp,
             toolsets,
             clients: Mutex::new(HashMap::new()),
         }
@@ -412,7 +451,7 @@ impl ServerHandler for SmartProxyMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             instructions: Some(
-                "Use `activate_external_mcp` to inspect cached tools, then `call_tool_in_external_mcp` to invoke a specific downstream MCP tool."
+                "Use `activate_external_mcp` to inspect cached tools, then `call_tool_in_external_mcp` or `call_safe_tool_in_external_mcp` to invoke a specific downstream MCP tool."
                     .into(),
             ),
             capabilities: ServerCapabilities::builder().enable_tools().build(),
@@ -429,6 +468,7 @@ impl ServerHandler for SmartProxyMcpServer {
             tools: vec![
                 self.activate_tool.clone(),
                 self.call_tool_in_external_mcp.clone(),
+                self.call_safe_tool_in_external_mcp.clone(),
             ],
             ..Default::default()
         }))
@@ -438,6 +478,9 @@ impl ServerHandler for SmartProxyMcpServer {
         match name {
             ACTIVATE_EXTERNAL_MCP_NAME => Some(self.activate_tool.clone()),
             CALL_TOOL_IN_EXTERNAL_MCP_NAME => Some(self.call_tool_in_external_mcp.clone()),
+            CALL_SAFE_TOOL_IN_EXTERNAL_MCP_NAME => {
+                Some(self.call_safe_tool_in_external_mcp.clone())
+            }
             _ => None,
         }
     }
@@ -479,11 +522,11 @@ impl ServerHandler for SmartProxyMcpServer {
 
                     Ok(build_activate_tool_result(toolset))
                 }
-                CALL_TOOL_IN_EXTERNAL_MCP_NAME => {
+                CALL_TOOL_IN_EXTERNAL_MCP_NAME | CALL_SAFE_TOOL_IN_EXTERNAL_MCP_NAME => {
                     let params: CallToolInExternalMcpRequest =
                         serde_json::from_value(JsonValue::Object(arguments)).map_err(|error| {
                             McpError::invalid_params(
-                                format!("invalid call_tool_in_external_mcp arguments: {error}"),
+                                format!("invalid {} arguments: {error}", request.name),
                                 None,
                             )
                         })?;
@@ -768,13 +811,28 @@ mod tests {
 
     #[test]
     fn call_tool_definition_contains_expected_fields() {
-        let tool = call_tool_in_external_mcp_definition();
+        let tool = call_tool_in_external_mcp_definition(CALL_TOOL_IN_EXTERNAL_MCP_NAME);
         let properties = tool
             .input_schema
             .get("properties")
             .and_then(JsonValue::as_object)
             .unwrap();
 
+        assert!(properties.contains_key("external_mcp_name"));
+        assert!(properties.contains_key("tool_name"));
+        assert!(properties.contains_key("args_in_json"));
+    }
+
+    #[test]
+    fn safe_call_tool_definition_contains_expected_fields() {
+        let tool = call_tool_in_external_mcp_definition(CALL_SAFE_TOOL_IN_EXTERNAL_MCP_NAME);
+        let properties = tool
+            .input_schema
+            .get("properties")
+            .and_then(JsonValue::as_object)
+            .unwrap();
+
+        assert_eq!(tool.name.as_ref(), CALL_SAFE_TOOL_IN_EXTERNAL_MCP_NAME);
         assert!(properties.contains_key("external_mcp_name"));
         assert!(properties.contains_key("tool_name"));
         assert!(properties.contains_key("args_in_json"));
