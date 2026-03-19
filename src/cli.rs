@@ -32,6 +32,10 @@ pub enum Command {
     },
     /// List configured stdio MCP servers.
     List,
+    /// Enable a configured MCP server.
+    Enable { name: String },
+    /// Disable a configured MCP server.
+    Disable { name: String },
     /// Import MCP servers from another tool's config and refresh their cached tools.
     #[command(arg_required_else_help = true)]
     Import {
@@ -249,5 +253,29 @@ mod tests {
             error.kind(),
             ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
         );
+    }
+
+    #[test]
+    fn parses_enable_server() {
+        let cli = Cli::parse_from(["msp", "enable", "github"]);
+
+        match cli.command {
+            Some(Command::Enable { name }) => {
+                assert_eq!(name, "github");
+            }
+            other => panic!("expected enable command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_disable_server() {
+        let cli = Cli::parse_from(["msp", "disable", "server1"]);
+
+        match cli.command {
+            Some(Command::Disable { name }) => {
+                assert_eq!(name, "server1");
+            }
+            other => panic!("expected disable command, got {other:?}"),
+        }
     }
 }

@@ -132,16 +132,28 @@ Example config:
 transport = "stdio"
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-github"]
+env_vars = ["GITHUB_TOKEN"]
+
+[servers.github.env]
+GITHUB_API_URL = "https://api.github.com"
 
 [servers.filesystem]
 transport = "stdio"
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+
+[servers.legacy-demo]
+transport = "stdio"
+command = "uvx"
+args = ["legacy-demo-server"]
+enabled = false
 ```
 
 Notes:
 
 - The config file only stores managed `servers`.
+- Each server is enabled by default. Set `enabled = false` or run `msp disable <name>` to keep it configured but exclude it from `msp mcp` activation and bulk reload.
+- `env` stores static environment variables for the downstream MCP server, while `env_vars` lists variable names that `msp` forwards from its own process environment when it starts that server.
 - `add`, `reload`, and `mcp` require `--provider <codex|opencode>`.
 - `import` accepts `--provider <codex|opencode>` and falls back to the current import source provider when omitted.
 - `codex` uses the built-in default model `gpt-5.2`.
@@ -177,6 +189,24 @@ Example:
 msp add remote-demo https://example.com/mcp
 ```
 
+### Enable or disable a server
+
+Disable a server:
+
+```bash
+msp disable server1
+```
+
+Enable it again:
+
+```bash
+msp enable server1
+```
+
+These commands resolve the server by exact or normalized name and update its `enabled` flag in the config file.
+Disabled servers stay in the config and keep their cache files, but `msp reload --provider ...` without a name and `msp mcp --provider ...` skip them.
+An explicit `msp reload --provider ... <name>` still works for a disabled server.
+
 ### Import servers from Codex
 
 ```bash
@@ -187,8 +217,10 @@ This command:
 
 1. reads Codex MCP servers from `$CODEX_HOME/config.toml` or `~/.codex/config.toml`
 2. imports each server into the `msp` config
-3. reloads every imported server immediately
-4. resolves the summary provider with priority `--provider`, then the current import source provider (`codex`)
+3. preserves each imported server's optional `enabled` flag and defaults to enabled when the source omits it
+4. preserves each imported server's optional `env` table and `env_vars` list
+5. reloads only imported servers that are enabled
+6. resolves the summary provider with priority `--provider`, then the current import source provider (`codex`)
 
 Without `--provider`, `import codex` uses the `codex` provider with the built-in default model `gpt-5.2`.
 For example, `msp import --provider opencode codex` imports Codex servers but summarizes them with OpenCode.
@@ -196,7 +228,7 @@ For example, `msp import --provider opencode codex` imports Codex servers but su
 If a Codex server name already exists in the `msp` config after normalization, that server is skipped.
 If a Codex server launches this proxy with `msp mcp`, that entry is also skipped during import.
 
-Only Codex MCP servers defined with `command` and optional string `args` are importable. Entries that rely on other settings such as `env`, `cwd`, or non-stdio transports are rejected instead of being imported partially.
+Only Codex MCP servers defined with `command`, optional string `args`, optional boolean `enabled`, optional string-to-string `env`, and optional string-array `env_vars` are importable. Entries that rely on other settings such as `cwd` or non-stdio transports are rejected instead of being imported partially.
 
 Running `msp import` without a source prints the command help instead of a missing-argument error.
 
@@ -210,8 +242,10 @@ This command:
 
 1. reads OpenCode MCP servers from `~/.config/opencode/opencode.json`
 2. imports each server into the `msp` config
-3. reloads every imported server immediately
-4. resolves the summary provider with priority `--provider`, then the current import source provider (`opencode`)
+3. preserves each imported server's optional `enabled` flag and defaults to enabled when the source omits it
+4. preserves each imported server's optional `environment` object as `msp` server `env`
+5. reloads only imported servers that are enabled
+6. resolves the summary provider with priority `--provider`, then the current import source provider (`opencode`)
 
 Without `--provider`, `import opencode` uses the `opencode` provider with the built-in default model `openai/gpt-5.2`.
 For example, `msp import --provider codex opencode` imports OpenCode servers but summarizes them with Codex.
@@ -219,7 +253,7 @@ For example, `msp import --provider codex opencode` imports OpenCode servers but
 If an OpenCode server name already exists in the `msp` config after normalization, that server is skipped.
 If an OpenCode server launches this proxy with `msp mcp`, that entry is also skipped during import.
 
-Only OpenCode MCP servers defined with a string-array `command` and optional `type = "local"` are importable. Entries that rely on other settings or use non-local server types are rejected instead of being imported partially.
+Only OpenCode MCP servers defined with a string-array `command`, optional `type = "local"`, optional boolean `enabled`, and optional string-to-string `environment` are importable. Entries that rely on other settings or use non-local server types are rejected instead of being imported partially.
 
 ### Install this proxy into Codex or OpenCode
 
@@ -255,7 +289,7 @@ This command:
 
 With `--replace`, `install` performs four extra steps before the final install:
 
-1. imports the target tool's MCP servers into `msp` and uses that import source's built-in provider
+1. imports the target tool's MCP servers into `msp`, preserving optional `enabled` flags, and uses that import source's built-in provider
 2. merges every MCP server currently present in the target config into a backup file
 3. removes all MCP servers from the target config
 4. installs `msp mcp --provider codex` or `msp mcp --provider opencode`
@@ -299,14 +333,14 @@ msp list
 ```
 
 This command reads the configured stdio MCP servers from the config file and prints each normalized server name with its configured command line.
-Each configured server is emitted on its own application output line and includes the last successful cache refresh time in `YYYY-MM-DD HH:MM:SS` format.
+Each configured server is emitted on its own application output line with its enabled or disabled state and the last successful cache refresh time in `YYYY-MM-DD HH:MM:SS` format.
 
 Example:
 
 ```text
-[MSP][INFO][cli.list] Configured 2 MCP server(s) in /Users/example/.config/mcp-smart-proxy/config.toml
-[MSP][INFO][cli.list.server] `github`: npx -y @modelcontextprotocol/server-github (last updated: 2026-03-16 10:30:45)
-[MSP][INFO][cli.list.server] `slack`: uvx slack-mcp (last updated: never)
+[MSP][INFO][cli.list] Configured 2 MCP server(s) in /Users/example/.config/mcp-smart-proxy/config.toml (1 enabled, 1 disabled)
+[MSP][INFO][cli.list.server] `github` [enabled]: npx -y @modelcontextprotocol/server-github (last updated: 2026-03-16 10:30:45)
+[MSP][INFO][cli.list.server] `slack` [disabled]: uvx slack-mcp (last updated: never)
 ```
 
 ### Remove a server
@@ -335,7 +369,7 @@ msp reload --provider codex
 
 This command:
 
-1. reloads the named MCP server, or every configured server if no name is given
+1. reloads the named MCP server, or every enabled configured server if no name is given
 2. connects to each selected MCP server
 3. fetches its tool list
 4. compares the fetched tool list with the cached tool list using JSON string equality
@@ -359,7 +393,7 @@ The cache is stored at:
 msp mcp --provider codex
 ```
 
-Before exposing the proxy stdio MCP server upstream, this command automatically reloads every configured MCP server.
+Before exposing the proxy stdio MCP server upstream, this command automatically reloads every enabled configured MCP server.
 
 That startup reload resolves the summary provider from the required `--provider`.
 
@@ -375,6 +409,8 @@ All other `msp` commands only read that cached record on startup. If the file sa
 
 ```bash
 msp add --provider codex github npx -y @modelcontextprotocol/server-github
+msp disable github
+msp enable github
 msp list
 ```
 

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::env;
 use std::error::Error;
 use std::fs;
@@ -51,6 +52,9 @@ impl StdioServer {
 pub struct ImportableServer {
     pub name: String,
     pub command: Vec<String>,
+    pub enabled: bool,
+    pub env: BTreeMap<String, String>,
+    pub env_vars: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +62,7 @@ pub struct ListedServer {
     pub name: String,
     pub command: String,
     pub args: Vec<String>,
+    pub enabled: bool,
     pub last_updated_at: Option<u128>,
 }
 
@@ -72,6 +77,12 @@ pub struct RemovedServer {
     pub name: String,
     pub cache_path: PathBuf,
     pub cache_deleted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetServerEnabledResult {
+    pub name: String,
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,21 +120,37 @@ pub fn add_server(
     name: &str,
     raw_command: Vec<String>,
 ) -> Result<String, Box<dyn Error>> {
-    save_server(config_path, name, raw_command)
+    save_server(
+        config_path,
+        name,
+        raw_command,
+        true,
+        BTreeMap::new(),
+        Vec::new(),
+    )
 }
 
 pub fn import_server(
     config_path: &Path,
-    name: &str,
-    raw_command: Vec<String>,
+    server: &ImportableServer,
 ) -> Result<String, Box<dyn Error>> {
-    save_server(config_path, name, raw_command)
+    save_server(
+        config_path,
+        &server.name,
+        server.command.clone(),
+        server.enabled,
+        server.env.clone(),
+        server.env_vars.clone(),
+    )
 }
 
 fn save_server(
     config_path: &Path,
     name: &str,
     raw_command: Vec<String>,
+    enabled: bool,
+    env: BTreeMap<String, String>,
+    env_vars: Vec<String>,
 ) -> Result<String, Box<dyn Error>> {
     let normalized = normalize_add_command(raw_command);
     if is_self_server_command(&normalized) {
@@ -140,7 +167,7 @@ fn save_server(
         return Err(format!("server `{name}` already exists").into());
     }
 
-    insert_server(&mut config, &name, &server)?;
+    insert_server(&mut config, &name, &server, enabled, env, env_vars)?;
     save_config_table(config_path, &config)?;
 
     Ok(name)
@@ -194,12 +221,14 @@ pub fn list_servers(config_path: &Path) -> Result<Vec<ListedServer>, Box<dyn Err
                 .transpose()?
                 .unwrap_or_default();
 
+            let enabled = parse_server_enabled(server, &name)?;
             let last_updated_at = read_cached_tools_timestamp(&name);
 
             Ok(ListedServer {
                 name,
                 command,
                 args,
+                enabled,
                 last_updated_at,
             })
         })
@@ -249,6 +278,33 @@ pub fn remove_server(
         name: resolved_name,
         cache_path,
         cache_deleted,
+    })
+}
+
+pub fn set_server_enabled(
+    config_path: &Path,
+    requested_name: &str,
+    enabled: bool,
+) -> Result<SetServerEnabledResult, Box<dyn Error>> {
+    let mut config = load_config_table(config_path)?;
+    let servers = config
+        .get_mut("servers")
+        .and_then(Value::as_table_mut)
+        .ok_or_else(|| "no `servers` table found in config".to_string())?;
+
+    let resolved_name = resolve_server_name(servers, requested_name)
+        .ok_or_else(|| format!("server `{requested_name}` not found"))?;
+    let server = servers
+        .get_mut(&resolved_name)
+        .and_then(Value::as_table_mut)
+        .ok_or_else(|| format!("server `{resolved_name}` must be a table"))?;
+
+    server.insert("enabled".to_string(), Value::Boolean(enabled));
+    save_config_table(config_path, &config)?;
+
+    Ok(SetServerEnabledResult {
+        name: resolved_name,
+        enabled,
     })
 }
 
@@ -329,7 +385,33 @@ pub fn configured_server(
         .transpose()?
         .unwrap_or_default();
 
-    Ok((resolved_name, ConfiguredServer { command, args }))
+    let env = parse_toml_string_table(server.get("env"), "env", "server", &resolved_name)?;
+    let env_vars =
+        parse_toml_string_array(server.get("env_vars"), "env_vars", "server", &resolved_name)?;
+
+    Ok((
+        resolved_name,
+        ConfiguredServer {
+            command,
+            args,
+            env,
+            env_vars,
+        },
+    ))
+}
+
+pub fn server_is_enabled(config: &Table, requested_name: &str) -> Result<bool, Box<dyn Error>> {
+    let servers = config
+        .get("servers")
+        .and_then(Value::as_table)
+        .ok_or_else(|| "no `servers` table found in config".to_string())?;
+    let resolved_name = resolve_server_name(servers, requested_name)
+        .ok_or_else(|| format!("server `{requested_name}` not found"))?;
+    let server = servers[&resolved_name]
+        .as_table()
+        .ok_or_else(|| format!("server `{resolved_name}` must be a table"))?;
+
+    parse_server_enabled(server, &resolved_name)
 }
 
 pub fn load_codex_servers_for_import() -> Result<(PathBuf, ImportPlan), Box<dyn Error>> {
@@ -665,6 +747,7 @@ fn load_codex_servers_for_import_from_path(path: &Path) -> Result<ImportPlan, Bo
             .as_table()
             .ok_or_else(|| format!("Codex MCP server `{name}` must be a table"))?;
         validate_importable_codex_server(&name, server)?;
+        let enabled = parse_codex_import_server_enabled(server, &name)?;
 
         let command = server
             .get("command")
@@ -696,9 +779,20 @@ fn load_codex_servers_for_import_from_path(path: &Path) -> Result<ImportPlan, Bo
             continue;
         }
 
+        let env = parse_toml_string_table(server.get("env"), "env", "Codex MCP server", &name)?;
+        let env_vars = parse_toml_string_array(
+            server.get("env_vars"),
+            "env_vars",
+            "Codex MCP server",
+            &name,
+        )?;
+
         importable_servers.push(ImportableServer {
             name,
             command: raw_command,
+            enabled,
+            env,
+            env_vars,
         });
     }
 
@@ -740,6 +834,7 @@ fn load_opencode_servers_for_import_from_path(path: &Path) -> Result<ImportPlan,
             .as_object()
             .ok_or_else(|| format!("OpenCode MCP server `{name}` must be an object"))?;
         validate_importable_opencode_server(&name, server)?;
+        let enabled = parse_opencode_import_server_enabled(server, &name)?;
 
         let command = server
             .get("command")
@@ -765,9 +860,19 @@ fn load_opencode_servers_for_import_from_path(path: &Path) -> Result<ImportPlan,
             continue;
         }
 
+        let env = parse_json_string_object(
+            server.get("environment"),
+            "environment",
+            "OpenCode MCP server",
+            &name,
+        )?;
+
         importable_servers.push(ImportableServer {
             name,
             command: raw_command,
+            enabled,
+            env,
+            env_vars: Vec::new(),
         });
     }
 
@@ -781,6 +886,9 @@ fn insert_server(
     config: &mut Table,
     name: &str,
     server: &StdioServer,
+    enabled: bool,
+    env: BTreeMap<String, String>,
+    env_vars: Vec<String>,
 ) -> Result<(), Box<dyn Error>> {
     let servers_value = config
         .entry("servers")
@@ -796,9 +904,132 @@ fn insert_server(
         "args".to_string(),
         Value::Array(server.args.iter().cloned().map(Value::String).collect()),
     );
+    if !enabled {
+        server_table.insert("enabled".to_string(), Value::Boolean(false));
+    }
+    if !env.is_empty() {
+        server_table.insert(
+            "env".to_string(),
+            Value::Table(
+                env.into_iter()
+                    .map(|(key, value)| (key, Value::String(value)))
+                    .collect(),
+            ),
+        );
+    }
+    if !env_vars.is_empty() {
+        server_table.insert(
+            "env_vars".to_string(),
+            Value::Array(env_vars.into_iter().map(Value::String).collect()),
+        );
+    }
 
     servers.insert(name.to_string(), Value::Table(server_table));
     Ok(())
+}
+
+fn parse_server_enabled(server: &Table, name: &str) -> Result<bool, Box<dyn Error>> {
+    match server.get("enabled") {
+        Some(Value::Boolean(enabled)) => Ok(*enabled),
+        Some(_) => Err(format!("server `{name}` has a non-boolean `enabled` field").into()),
+        None => Ok(true),
+    }
+}
+
+fn parse_codex_import_server_enabled(server: &Table, name: &str) -> Result<bool, Box<dyn Error>> {
+    match server.get("enabled") {
+        Some(Value::Boolean(enabled)) => Ok(*enabled),
+        Some(_) => {
+            Err(format!("Codex MCP server `{name}` has a non-boolean `enabled` field").into())
+        }
+        None => Ok(true),
+    }
+}
+
+fn parse_opencode_import_server_enabled(
+    server: &JsonMap<String, JsonValue>,
+    name: &str,
+) -> Result<bool, Box<dyn Error>> {
+    match server.get("enabled") {
+        Some(JsonValue::Bool(enabled)) => Ok(*enabled),
+        Some(_) => {
+            Err(format!("OpenCode MCP server `{name}` has a non-boolean `enabled` field").into())
+        }
+        None => Ok(true),
+    }
+}
+
+fn parse_toml_string_table(
+    value: Option<&Value>,
+    field_name: &str,
+    kind: &str,
+    name: &str,
+) -> Result<BTreeMap<String, String>, Box<dyn Error>> {
+    match value {
+        None => Ok(BTreeMap::new()),
+        Some(Value::Table(table)) => table
+            .iter()
+            .map(|(key, value)| {
+                value
+                    .as_str()
+                    .map(|value| (key.clone(), value.to_string()))
+                    .ok_or_else(|| {
+                        format!(
+                            "{kind} `{name}` contains a non-string `{field_name}` value `{key}`"
+                        )
+                    })
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()
+            .map_err(Into::into),
+        Some(_) => Err(format!("{kind} `{name}` has a non-table `{field_name}` field").into()),
+    }
+}
+
+fn parse_toml_string_array(
+    value: Option<&Value>,
+    field_name: &str,
+    kind: &str,
+    name: &str,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    match value {
+        None => Ok(Vec::new()),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|value| {
+                value.as_str().map(ToOwned::to_owned).ok_or_else(|| {
+                    format!("{kind} `{name}` contains a non-string `{field_name}` entry")
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into),
+        Some(_) => Err(format!("{kind} `{name}` has a non-array `{field_name}` field").into()),
+    }
+}
+
+fn parse_json_string_object(
+    value: Option<&JsonValue>,
+    field_name: &str,
+    kind: &str,
+    name: &str,
+) -> Result<BTreeMap<String, String>, Box<dyn Error>> {
+    match value {
+        None => Ok(BTreeMap::new()),
+        Some(JsonValue::Object(map)) => map
+            .iter()
+            .map(|(key, value)| {
+                value
+                    .as_str()
+                    .map(|value| (key.clone(), value.to_string()))
+                    .ok_or_else(|| {
+                        format!(
+                            "{kind} `{name}` contains a non-string `{field_name}` value `{key}`"
+                        )
+                    })
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()
+            .map_err(Into::into),
+        Some(_) => Err(format!("{kind} `{name}` has a non-object `{field_name}` field").into()),
+    }
 }
 
 fn codex_server_value(server: &StdioServer) -> Value {
@@ -1141,7 +1372,12 @@ fn remove_opencode_self_servers(config: &mut JsonValue) -> Result<usize, Box<dyn
 fn validate_importable_codex_server(name: &str, server: &Table) -> Result<(), Box<dyn Error>> {
     let unsupported_keys = server
         .keys()
-        .filter(|key| !matches!(key.as_str(), "command" | "args"))
+        .filter(|key| {
+            !matches!(
+                key.as_str(),
+                "command" | "args" | "enabled" | "env" | "env_vars"
+            )
+        })
         .map(|key| format!("`{key}`"))
         .collect::<Vec<_>>();
 
@@ -1150,7 +1386,7 @@ fn validate_importable_codex_server(name: &str, server: &Table) -> Result<(), Bo
     }
 
     Err(format!(
-        "Codex MCP server `{name}` uses unsupported settings {}; only `command` and `args` can be imported",
+        "Codex MCP server `{name}` uses unsupported settings {}; only `command`, `args`, and optional `enabled`, `env`, and `env_vars` can be imported",
         unsupported_keys.join(", ")
     )
     .into())
@@ -1162,13 +1398,13 @@ fn validate_importable_opencode_server(
 ) -> Result<(), Box<dyn Error>> {
     let unsupported_keys = server
         .keys()
-        .filter(|key| !matches!(key.as_str(), "command" | "type"))
+        .filter(|key| !matches!(key.as_str(), "command" | "type" | "enabled" | "environment"))
         .map(|key| format!("`{key}`"))
         .collect::<Vec<_>>();
 
     if !unsupported_keys.is_empty() {
         return Err(format!(
-            "OpenCode MCP server `{name}` uses unsupported settings {}; only `command` and optional `type` can be imported",
+            "OpenCode MCP server `{name}` uses unsupported settings {}; only `command` and optional `type`, `enabled`, and `environment` can be imported",
             unsupported_keys.join(", ")
         )
         .into());
@@ -1733,14 +1969,77 @@ mod tests {
                         "-y".to_string(),
                         "@modelcontextprotocol/server-github".to_string(),
                     ],
+                    enabled: true,
+                    env: BTreeMap::new(),
+                    env_vars: Vec::new(),
                 },
                 ImportableServer {
                     name: "beta".to_string(),
                     command: vec!["uvx".to_string(), "beta-server".to_string()],
+                    enabled: true,
+                    env: BTreeMap::new(),
+                    env_vars: Vec::new(),
                 },
             ]
         );
         assert!(plan.skipped_self_servers.is_empty());
+
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
+    fn preserves_codex_enabled_state_when_loading_import_plan() {
+        let config_path = unique_test_path("codex-import-enabled.toml");
+        fs::write(
+            &config_path,
+            r#"
+                [mcp_servers.alpha]
+                command = "npx"
+                args = ["-y", "@modelcontextprotocol/server-github"]
+                enabled = false
+
+                [mcp_servers.beta]
+                command = "uvx"
+                args = ["beta-server"]
+                enabled = true
+            "#,
+        )
+        .unwrap();
+
+        let plan = load_codex_servers_for_import_from_path(&config_path).unwrap();
+
+        assert_eq!(plan.servers.len(), 2);
+        assert!(!plan.servers[0].enabled);
+        assert!(plan.servers[1].enabled);
+
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
+    fn loads_codex_server_env_and_env_vars_for_import() {
+        let config_path = unique_test_path("codex-import-env.toml");
+        fs::write(
+            &config_path,
+            r#"
+                [mcp_servers.demo]
+                command = "npx"
+                args = ["-y", "demo-server"]
+                env_vars = ["DEMO_TOKEN"]
+
+                [mcp_servers.demo.env]
+                DEMO_REGION = "global"
+            "#,
+        )
+        .unwrap();
+
+        let plan = load_codex_servers_for_import_from_path(&config_path).unwrap();
+
+        assert_eq!(plan.servers.len(), 1);
+        assert_eq!(
+            plan.servers[0].env.get("DEMO_REGION"),
+            Some(&"global".to_string())
+        );
+        assert_eq!(plan.servers[0].env_vars, vec!["DEMO_TOKEN".to_string()]);
 
         fs::remove_file(config_path).unwrap();
     }
@@ -1777,14 +2076,82 @@ mod tests {
                         "-y".to_string(),
                         "@modelcontextprotocol/server-github".to_string(),
                     ],
+                    enabled: true,
+                    env: BTreeMap::new(),
+                    env_vars: Vec::new(),
                 },
                 ImportableServer {
                     name: "beta".to_string(),
                     command: vec!["uvx".to_string(), "beta-server".to_string()],
+                    enabled: true,
+                    env: BTreeMap::new(),
+                    env_vars: Vec::new(),
                 },
             ]
         );
         assert!(plan.skipped_self_servers.is_empty());
+
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
+    fn loads_opencode_server_environment_for_import() {
+        let config_path = unique_test_path("opencode-import-environment.json");
+        fs::write(
+            &config_path,
+            r#"{
+                "mcp": {
+                    "demo": {
+                        "command": ["npx", "-y", "demo-server"],
+                        "type": "local",
+                        "environment": {
+                            "DEMO_REGION": "global"
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let plan = load_opencode_servers_for_import_from_path(&config_path).unwrap();
+
+        assert_eq!(plan.servers.len(), 1);
+        assert_eq!(
+            plan.servers[0].env.get("DEMO_REGION"),
+            Some(&"global".to_string())
+        );
+        assert!(plan.servers[0].env_vars.is_empty());
+
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
+    fn preserves_opencode_enabled_state_when_loading_import_plan() {
+        let config_path = unique_test_path("opencode-import-enabled.json");
+        fs::write(
+            &config_path,
+            r#"{
+                "mcp": {
+                    "alpha": {
+                        "command": ["npx", "-y", "@modelcontextprotocol/server-github"],
+                        "type": "local",
+                        "enabled": false
+                    },
+                    "beta": {
+                        "command": ["uvx", "beta-server"],
+                        "type": "local",
+                        "enabled": true
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let plan = load_opencode_servers_for_import_from_path(&config_path).unwrap();
+
+        assert_eq!(plan.servers.len(), 2);
+        assert!(!plan.servers[0].enabled);
+        assert!(plan.servers[1].enabled);
 
         fs::remove_file(config_path).unwrap();
     }
@@ -1820,6 +2187,9 @@ mod tests {
                     "-y".to_string(),
                     "@modelcontextprotocol/server-github".to_string(),
                 ],
+                enabled: true,
+                env: BTreeMap::new(),
+                env_vars: Vec::new(),
             }]
         );
         assert_eq!(plan.skipped_self_servers, vec!["proxy".to_string()]);
@@ -1850,7 +2220,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "OpenCode MCP server `demo` uses unsupported settings `env`; only `command` and optional `type` can be imported"
+            "OpenCode MCP server `demo` uses unsupported settings `env`; only `command` and optional `type`, `enabled`, and `environment` can be imported"
         );
 
         fs::remove_file(config_path).unwrap();
@@ -1954,6 +2324,9 @@ mod tests {
                     "-y".to_string(),
                     "@modelcontextprotocol/server-github".to_string(),
                 ],
+                enabled: true,
+                env: BTreeMap::new(),
+                env_vars: Vec::new(),
             }]
         );
         assert_eq!(plan.skipped_self_servers, vec!["proxy".to_string()]);
@@ -1970,9 +2343,7 @@ mod tests {
                 [mcp_servers.demo]
                 command = "npx"
                 args = ["-y", "demo-server"]
-
-                [mcp_servers.demo.env]
-                DEMO_TOKEN = "secret"
+                cwd = "/tmp/demo"
             "#,
         )
         .unwrap();
@@ -1981,7 +2352,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "Codex MCP server `demo` uses unsupported settings `env`; only `command` and `args` can be imported"
+            "Codex MCP server `demo` uses unsupported settings `cwd`; only `command`, `args`, and optional `enabled`, `env`, and `env_vars` can be imported"
         );
 
         fs::remove_file(config_path).unwrap();
@@ -2055,6 +2426,58 @@ mod tests {
     }
 
     #[test]
+    fn writes_imported_disabled_server_to_config() {
+        let config_path = unique_test_path("write-imported-disabled-server-config.toml");
+        let server_name = import_server(
+            &config_path,
+            &ImportableServer {
+                name: "ones".to_string(),
+                command: vec!["https://ones.com/mcp".to_string()],
+                enabled: false,
+                env: BTreeMap::new(),
+                env_vars: Vec::new(),
+            },
+        )
+        .unwrap();
+        let config = load_config_table(&config_path).unwrap();
+
+        let saved = config["servers"][&server_name].as_table().unwrap();
+        assert_eq!(saved["enabled"].as_bool(), Some(false));
+
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
+    fn writes_imported_server_env_and_env_vars_to_config() {
+        let config_path = unique_test_path("write-imported-server-env-config.toml");
+        let server_name = import_server(
+            &config_path,
+            &ImportableServer {
+                name: "demo".to_string(),
+                command: vec![
+                    "npx".to_string(),
+                    "-y".to_string(),
+                    "demo-server".to_string(),
+                ],
+                enabled: true,
+                env: BTreeMap::from([("DEMO_REGION".to_string(), "global".to_string())]),
+                env_vars: vec!["DEMO_TOKEN".to_string()],
+            },
+        )
+        .unwrap();
+        let config = load_config_table(&config_path).unwrap();
+
+        let saved = config["servers"][&server_name].as_table().unwrap();
+        assert_eq!(saved["env"]["DEMO_REGION"].as_str(), Some("global"));
+        assert_eq!(
+            saved["env_vars"].as_array().unwrap(),
+            &vec![Value::String("DEMO_TOKEN".to_string())]
+        );
+
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
     fn detects_existing_server_name_after_normalization() {
         let config: Table = toml::from_str(
             r#"
@@ -2104,12 +2527,14 @@ mod tests {
                         "-y".to_string(),
                         "@modelcontextprotocol/server-github".to_string(),
                     ],
+                    enabled: true,
                     last_updated_at: None,
                 },
                 ListedServer {
                     name: "beta".to_string(),
                     command: "uvx".to_string(),
                     args: vec!["beta-server".to_string()],
+                    enabled: true,
                     last_updated_at: None,
                 },
             ]
@@ -2152,6 +2577,7 @@ mod tests {
         let servers = with_home_env(&cache_home, || list_servers(&config_path).unwrap());
 
         assert_eq!(servers.len(), 1);
+        assert!(servers[0].enabled);
         assert_eq!(servers[0].last_updated_at, Some(1_742_103_456_000));
 
         fs::remove_file(config_path).unwrap();
@@ -2358,11 +2784,123 @@ mod tests {
             ConfiguredServer {
                 command: "uvx".to_string(),
                 args: vec!["mcp-server".to_string()],
+                env: BTreeMap::new(),
+                env_vars: Vec::new(),
             }
         );
 
         let (sanitized_name, _) = configured_server(&config, "My Server").unwrap();
         assert_eq!(sanitized_name, "my-server");
+    }
+
+    #[test]
+    fn lists_disabled_servers() {
+        let config_path = unique_test_path("list-disabled-servers.toml");
+        fs::write(
+            &config_path,
+            r#"
+                [servers.alpha]
+                transport = "stdio"
+                command = "npx"
+                args = ["-y", "@modelcontextprotocol/server-github"]
+                enabled = false
+            "#,
+        )
+        .unwrap();
+
+        let servers = list_servers(&config_path).unwrap();
+
+        assert_eq!(servers.len(), 1);
+        assert!(!servers[0].enabled);
+
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
+    fn enables_server_by_sanitized_name() {
+        let config_path = unique_test_path("enable-server.toml");
+        fs::write(
+            &config_path,
+            r#"
+                [servers.my-server]
+                transport = "stdio"
+                command = "uvx"
+                args = ["demo-server"]
+                enabled = false
+            "#,
+        )
+        .unwrap();
+
+        let updated = set_server_enabled(&config_path, "My Server", true).unwrap();
+        let config = load_config_table(&config_path).unwrap();
+
+        assert_eq!(
+            updated,
+            SetServerEnabledResult {
+                name: "my-server".to_string(),
+                enabled: true,
+            }
+        );
+        assert_eq!(
+            config["servers"]["my-server"]["enabled"].as_bool(),
+            Some(true)
+        );
+
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
+    fn disables_server_by_exact_name() {
+        let config_path = unique_test_path("disable-server.toml");
+        fs::write(
+            &config_path,
+            r#"
+                [servers.server1]
+                transport = "stdio"
+                command = "uvx"
+                args = ["demo-server"]
+            "#,
+        )
+        .unwrap();
+
+        let updated = set_server_enabled(&config_path, "server1", false).unwrap();
+        let config = load_config_table(&config_path).unwrap();
+
+        assert_eq!(
+            updated,
+            SetServerEnabledResult {
+                name: "server1".to_string(),
+                enabled: false,
+            }
+        );
+        assert_eq!(
+            config["servers"]["server1"]["enabled"].as_bool(),
+            Some(false)
+        );
+
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
+    fn reads_enabled_state_with_default_true() {
+        let config: Table = toml::from_str(
+            r#"
+                [servers.alpha]
+                transport = "stdio"
+                command = "uvx"
+                args = ["alpha-server"]
+
+                [servers.beta]
+                transport = "stdio"
+                command = "uvx"
+                args = ["beta-server"]
+                enabled = false
+            "#,
+        )
+        .unwrap();
+
+        assert!(server_is_enabled(&config, "alpha").unwrap());
+        assert!(!server_is_enabled(&config, "beta").unwrap());
     }
 
     #[test]

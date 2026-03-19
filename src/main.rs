@@ -20,6 +20,7 @@ use config::{
     load_codex_servers_for_import, load_config_table, load_model_provider_config,
     load_opencode_servers_for_import, remove_server, replace_codex_mcp_servers,
     replace_opencode_mcp_servers, restore_codex_mcp_servers, restore_opencode_mcp_servers,
+    set_server_enabled,
 };
 use console::{describe_command, operation_error, print_app_error, print_app_event};
 use paths::expand_tilde;
@@ -96,27 +97,78 @@ async fn run() -> Result<(), Box<dyn Error>> {
                     error,
                 )
             })?;
+            let enabled_count = servers.iter().filter(|server| server.enabled).count();
+            let disabled_count = servers.len() - enabled_count;
 
             print_app_event(
                 "cli.list",
                 format!(
-                    "Configured {} MCP server(s) in {}",
+                    "Configured {} MCP server(s) in {} ({} enabled, {} disabled)",
                     servers.len(),
-                    config_path.display()
+                    config_path.display(),
+                    enabled_count,
+                    disabled_count
                 ),
             );
 
             for server in servers {
                 let command_line = describe_command(&server.command, &server.args);
                 let last_updated = format_last_updated(server.last_updated_at);
+                let state = if server.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                };
                 print_app_event(
                     "cli.list.server",
                     format!(
-                        "`{}`: {} (last updated: {})",
-                        server.name, command_line, last_updated
+                        "`{}` [{}]: {} (last updated: {})",
+                        server.name, state, command_line, last_updated
                     ),
                 );
             }
+        }
+        Some(Command::Enable { name }) => {
+            let result = set_server_enabled(&config_path, &name, true).map_err(|error| {
+                operation_error(
+                    "cli.enable",
+                    format!(
+                        "failed to enable MCP server `{name}` in {}",
+                        config_path.display()
+                    ),
+                    error,
+                )
+            })?;
+
+            print_app_event(
+                "cli.enable",
+                format!(
+                    "Enabled MCP server `{}` in {}",
+                    result.name,
+                    config_path.display()
+                ),
+            );
+        }
+        Some(Command::Disable { name }) => {
+            let result = set_server_enabled(&config_path, &name, false).map_err(|error| {
+                operation_error(
+                    "cli.disable",
+                    format!(
+                        "failed to disable MCP server `{name}` in {}",
+                        config_path.display()
+                    ),
+                    error,
+                )
+            })?;
+
+            print_app_event(
+                "cli.disable",
+                format!(
+                    "Disabled MCP server `{}` in {}",
+                    result.name,
+                    config_path.display()
+                ),
+            );
         }
         Some(Command::Import {
             provider,
@@ -157,36 +209,44 @@ async fn run() -> Result<(), Box<dyn Error>> {
                     continue;
                 }
 
-                let server_name = import_server(&config_path, &server.name, server.command)
+                let server_name = import_server(&config_path, &server).map_err(|error| {
+                    operation_error(
+                        "cli.import.codex.add",
+                        format!(
+                            "failed to import MCP server `{}` from {} into {}",
+                            server.name,
+                            codex_config_path.display(),
+                            config_path.display()
+                        ),
+                        error,
+                    )
+                })?;
+                if server.enabled {
+                    let reload_result = reload_server_with_provider(
+                        &config_path,
+                        &server_name,
+                        &provider,
+                    )
+                    .await
                     .map_err(|error| {
                         operation_error(
-                            "cli.import.codex.add",
+                            "cli.import.codex.reload",
                             format!(
-                                "failed to import MCP server `{}` from {} into {}",
-                                server.name,
-                                codex_config_path.display(),
-                                config_path.display()
+                                "failed to reload imported MCP server `{server_name}` from {}",
+                                codex_config_path.display()
                             ),
                             error,
                         )
                     })?;
-                let reload_result =
-                    reload_server_with_provider(&config_path, &server_name, &provider)
-                        .await
-                        .map_err(|error| {
-                            operation_error(
-                                "cli.import.codex.reload",
-                                format!(
-                                    "failed to reload imported MCP server `{server_name}` from {}",
-                                    codex_config_path.display()
-                                ),
-                                error,
-                            )
-                        })?;
-                imported_servers.push(format!(
-                    "Imported `{server_name}` and cached tools at {}",
-                    reload_result.cache_path.display()
-                ));
+                    imported_servers.push(format!(
+                        "Imported `{server_name}` [enabled] and cached tools at {}",
+                        reload_result.cache_path.display()
+                    ));
+                } else {
+                    imported_servers.push(format!(
+                        "Imported `{server_name}` [disabled] without reloading cached tools"
+                    ));
+                }
                 config = load_config_table(&config_path).map_err(|error| {
                     operation_error(
                         "cli.import.codex.refresh_config",
@@ -260,36 +320,44 @@ async fn run() -> Result<(), Box<dyn Error>> {
                     continue;
                 }
 
-                let server_name = import_server(&config_path, &server.name, server.command)
+                let server_name = import_server(&config_path, &server).map_err(|error| {
+                    operation_error(
+                        "cli.import.opencode.add",
+                        format!(
+                            "failed to import MCP server `{}` from {} into {}",
+                            server.name,
+                            opencode_config_path.display(),
+                            config_path.display()
+                        ),
+                        error,
+                    )
+                })?;
+                if server.enabled {
+                    let reload_result = reload_server_with_provider(
+                        &config_path,
+                        &server_name,
+                        &provider,
+                    )
+                    .await
                     .map_err(|error| {
                         operation_error(
-                            "cli.import.opencode.add",
+                            "cli.import.opencode.reload",
                             format!(
-                                "failed to import MCP server `{}` from {} into {}",
-                                server.name,
-                                opencode_config_path.display(),
-                                config_path.display()
+                                "failed to reload imported MCP server `{server_name}` from {}",
+                                opencode_config_path.display()
                             ),
                             error,
                         )
                     })?;
-                let reload_result =
-                    reload_server_with_provider(&config_path, &server_name, &provider)
-                        .await
-                        .map_err(|error| {
-                            operation_error(
-                                "cli.import.opencode.reload",
-                                format!(
-                                    "failed to reload imported MCP server `{server_name}` from {}",
-                                    opencode_config_path.display()
-                                ),
-                                error,
-                            )
-                        })?;
-                imported_servers.push(format!(
-                    "Imported `{server_name}` and cached tools at {}",
-                    reload_result.cache_path.display()
-                ));
+                    imported_servers.push(format!(
+                        "Imported `{server_name}` [enabled] and cached tools at {}",
+                        reload_result.cache_path.display()
+                    ));
+                } else {
+                    imported_servers.push(format!(
+                        "Imported `{server_name}` [disabled] without reloading cached tools"
+                    ));
+                }
                 config = load_config_table(&config_path).map_err(|error| {
                     operation_error(
                         "cli.import.opencode.refresh_config",
@@ -495,7 +563,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
                         )
                     })?;
                 let mut results = Vec::new();
-                for server in servers {
+                for server in servers.into_iter().filter(|server| server.enabled) {
                     let server_name = server.name;
                     let reload_result =
                         reload_server_with_provider(&config_path, &server_name, &resolved_provider)
@@ -616,35 +684,40 @@ async fn install_with_replace(
             continue;
         }
 
-        let server_name =
-            import_server(config_path, &server.name, server.command).map_err(|error| {
-                operation_error(
-                    "cli.install.replace.import",
-                    format!(
-                        "failed to import MCP server `{}` from {} into {}",
-                        server.name,
-                        source_config_path.display(),
-                        config_path.display()
-                    ),
-                    error,
-                )
-            })?;
-        let reload_result = reload_server_with_provider(config_path, &server_name, &provider)
-            .await
-            .map_err(|error| {
-                operation_error(
-                    "cli.install.replace.reload",
-                    format!(
-                        "failed to reload imported MCP server `{server_name}` from {}",
-                        source_config_path.display()
-                    ),
-                    error,
-                )
-            })?;
-        imported_servers.push(format!(
-            "Imported `{server_name}` and cached tools at {}",
-            reload_result.cache_path.display()
-        ));
+        let server_name = import_server(config_path, &server).map_err(|error| {
+            operation_error(
+                "cli.install.replace.import",
+                format!(
+                    "failed to import MCP server `{}` from {} into {}",
+                    server.name,
+                    source_config_path.display(),
+                    config_path.display()
+                ),
+                error,
+            )
+        })?;
+        if server.enabled {
+            let reload_result = reload_server_with_provider(config_path, &server_name, &provider)
+                .await
+                .map_err(|error| {
+                    operation_error(
+                        "cli.install.replace.reload",
+                        format!(
+                            "failed to reload imported MCP server `{server_name}` from {}",
+                            source_config_path.display()
+                        ),
+                        error,
+                    )
+                })?;
+            imported_servers.push(format!(
+                "Imported `{server_name}` [enabled] and cached tools at {}",
+                reload_result.cache_path.display()
+            ));
+        } else {
+            imported_servers.push(format!(
+                "Imported `{server_name}` [disabled] without reloading cached tools"
+            ));
+        }
         config = load_config_table(config_path).map_err(|error| {
             operation_error(
                 "cli.install.replace.refresh_config",

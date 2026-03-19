@@ -141,6 +141,9 @@ async fn fetch_tools(
     let (transport, stderr) = TokioChildProcess::builder(
         tokio::process::Command::new(&server.command).configure(|cmd| {
             cmd.args(&server.args);
+            for (name, value) in server.resolved_env() {
+                cmd.env(name, value);
+            }
         }),
     )
     .stderr(Stdio::piped())

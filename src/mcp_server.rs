@@ -20,7 +20,7 @@ use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use tokio::sync::Mutex;
 use toml::{Table, Value};
 
-use crate::config::{configured_server, list_servers, load_config_table};
+use crate::config::{configured_server, list_servers, load_config_table, server_is_enabled};
 use crate::console::{
     ExternalOutputRouter, describe_command, operation_error, print_external_command_failure,
     print_external_output_if_present, spawn_stderr_collector,
@@ -126,7 +126,7 @@ async fn reload_all_toolsets(
         )
     })?;
 
-    for server in servers {
+    for server in servers.into_iter().filter(|server| server.enabled) {
         let server_name = server.name;
         match provider {
             Some(provider) => {
@@ -163,6 +163,9 @@ fn load_cached_toolsets_from_home(
 
     let mut toolsets = Vec::new();
     for name in names {
+        if !server_is_enabled(config, &name)? {
+            continue;
+        }
         let (_, server) = configured_server(config, &name)?;
         let cache_path = cache_file_path_from_home(home, &name)?;
         if !cache_path.exists() {
@@ -316,6 +319,9 @@ async fn connect_toolset_client(server: &ConfiguredServer) -> Result<ToolsetClie
     let (transport, stderr) = TokioChildProcess::builder(
         tokio::process::Command::new(&server.command).configure(|cmd| {
             cmd.args(&server.args);
+            for (name, value) in server.resolved_env() {
+                cmd.env(name, value);
+            }
         }),
     )
     .stderr(Stdio::piped())
@@ -555,6 +561,7 @@ mod tests {
                 server: ConfiguredServer {
                     command: "uvx".to_string(),
                     args: vec!["alpha".to_string()],
+                    ..Default::default()
                 },
                 tools: vec![],
             },
@@ -564,6 +571,7 @@ mod tests {
                 server: ConfiguredServer {
                     command: "uvx".to_string(),
                     args: vec!["beta".to_string()],
+                    ..Default::default()
                 },
                 tools: vec![],
             },
@@ -617,6 +625,57 @@ mod tests {
     }
 
     #[test]
+    fn skips_disabled_toolsets() {
+        let home = unique_test_home("load-disabled-toolsets");
+        let config: Table = toml::from_str(
+            r#"
+                [servers.alpha]
+                transport = "stdio"
+                command = "uvx"
+                args = ["alpha-server"]
+                enabled = false
+
+                [servers.beta]
+                transport = "stdio"
+                command = "uvx"
+                args = ["beta-server"]
+            "#,
+        )
+        .unwrap();
+
+        let alpha_cache = cache_file_path_from_home(&home, "alpha").unwrap();
+        let beta_cache = cache_file_path_from_home(&home, "beta").unwrap();
+        fs::create_dir_all(alpha_cache.parent().unwrap()).unwrap();
+        fs::write(
+            &alpha_cache,
+            serde_json::to_string(&CachedTools {
+                server: "alpha".to_string(),
+                summary: "Use Alpha.".to_string(),
+                fetched_at_epoch_ms: 42,
+                tools: vec![],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            &beta_cache,
+            serde_json::to_string(&CachedTools {
+                server: "beta".to_string(),
+                summary: "Use Beta.".to_string(),
+                fetched_at_epoch_ms: 43,
+                tools: vec![],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let toolsets = load_cached_toolsets_from_home(&config, &home).unwrap();
+
+        assert_eq!(toolsets.len(), 1);
+        assert_eq!(toolsets[0].name, "beta");
+    }
+
+    #[test]
     fn resolves_toolset_by_sanitized_name() {
         let toolsets = vec![CachedToolsetRecord {
             name: "team-alpha".to_string(),
@@ -624,6 +683,7 @@ mod tests {
             server: ConfiguredServer {
                 command: "uvx".to_string(),
                 args: vec!["alpha".to_string()],
+                ..Default::default()
             },
             tools: vec![],
         }];
@@ -640,6 +700,7 @@ mod tests {
             server: ConfiguredServer {
                 command: "uvx".to_string(),
                 args: vec!["alpha".to_string()],
+                ..Default::default()
             },
             tools: vec![ToolSnapshot {
                 name: "search".to_string(),
