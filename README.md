@@ -23,7 +23,7 @@ Your Agents see only these three tools. When they want to use a tool from a MCP 
 
 ## Requirements
 
-- Homebrew for installation on macOS and Linux
+- Homebrew, or `curl`/`wget` plus `tar`, for installation
 - The `codex` CLI for summary using the `codex` provider
 - The `opencode` CLI for summary using the `opencode` provider
 - `npx` for running `mcp-remote` when adding http URLs as MCP servers
@@ -35,6 +35,28 @@ Install the latest released build with Homebrew:
 
 ```bash
 brew install tiejunhu/mcp-smart-proxy/msp
+```
+
+Or install the latest release for the current platform with the repository installer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tiejunhu/mcp-smart-proxy/master/install.sh | bash
+```
+
+The installer resolves the latest version through the GitHub Releases redirect path instead of the GitHub REST API, which avoids unauthenticated `api.github.com` rate limits.
+
+By default the installer writes `msp` to `/opt/homebrew/bin` when that directory exists and is writable, then falls back to `/usr/local/bin`, and finally to `~/.local/bin`.
+
+Install to a custom location instead:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tiejunhu/mcp-smart-proxy/master/install.sh | INSTALL_DIR=/tmp/msp/bin bash
+```
+
+Install a specific released version instead of the latest one:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tiejunhu/mcp-smart-proxy/master/install.sh | VERSION=v0.0.19 bash
 ```
 
 After installation, run:
