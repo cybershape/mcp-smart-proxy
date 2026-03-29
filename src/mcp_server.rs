@@ -27,7 +27,10 @@ use crate::console::{
 };
 use crate::paths::{cache_file_path_from_home, home_dir, sanitize_name};
 use crate::reload::{reload_server, reload_server_with_provider};
-use crate::types::{CachedTools, ConfiguredServer, ModelProviderConfig, ToolSnapshot};
+use crate::remote::connect_remote_client;
+use crate::types::{
+    CachedTools, ConfiguredServer, ConfiguredTransport, ModelProviderConfig, ToolSnapshot,
+};
 
 const ACTIVATE_EXTERNAL_MCP_NAME: &str = "activate_external_mcp";
 const ACTIVATE_EXTERNAL_MCP_TOOL_NAME: &str = "activate_external_mcp_tool";
@@ -369,62 +372,81 @@ fn map_client_initialize_error(error: ClientInitializeError) -> McpError {
     }
 }
 
-async fn connect_toolset_client(server: &ConfiguredServer) -> Result<ToolsetClient, McpError> {
-    let command_line = describe_command(&server.command, &server.args);
-    let stderr_router = ExternalOutputRouter::new();
-    let stderr_capture = stderr_router.start_capture().await;
-    let (transport, stderr) = TokioChildProcess::builder(
-        tokio::process::Command::new(&server.command).configure(|cmd| {
-            cmd.args(&server.args);
-            for (name, value) in server.resolved_env() {
-                cmd.env(name, value);
-            }
-        }),
-    )
-    .stderr(Stdio::piped())
-    .spawn()
-    .map_err(|error| McpError::internal_error(error.to_string(), None))?;
-    let label = server.command.clone();
-
-    if let Some(stderr) = stderr {
-        spawn_stderr_collector(
-            "mcp.connect_toolset_client".to_string(),
-            label.clone(),
-            command_line.clone(),
-            stderr,
-            stderr_router.clone(),
-        );
-    }
-
-    let client = match ().serve(transport).await {
-        Ok(client) => client,
-        Err(error) => {
-            let stderr_content = stderr_capture.finish().await;
-            print_external_command_failure(
-                "mcp.connect_toolset_client",
-                &label,
-                &command_line,
-                "connect-failed",
-            );
-            print_external_output_if_present(
-                "mcp.connect_toolset_client",
-                &label,
-                &command_line,
-                "stderr",
-                &stderr_content,
+async fn connect_toolset_client(
+    server_name: &str,
+    server: &ConfiguredServer,
+) -> Result<ToolsetClient, McpError> {
+    match &server.transport {
+        ConfiguredTransport::Stdio { command, args } => {
+            let command_line = describe_command(command, args);
+            let stderr_router = ExternalOutputRouter::new();
+            let stderr_capture = stderr_router.start_capture().await;
+            let (transport, stderr) = TokioChildProcess::builder(
+                tokio::process::Command::new(command).configure(|cmd| {
+                    cmd.args(args);
+                    for (name, value) in server.resolved_env() {
+                        cmd.env(name, value);
+                    }
+                }),
             )
-            .await;
-            return Err(map_client_initialize_error(error));
-        }
-    };
-    let _ = stderr_capture.finish().await;
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+            let label = command.clone();
 
-    Ok(ToolsetClient {
-        service: Arc::new(client),
-        stderr: stderr_router,
-        command_line,
-        label,
-    })
+            if let Some(stderr) = stderr {
+                spawn_stderr_collector(
+                    "mcp.connect_toolset_client".to_string(),
+                    label.clone(),
+                    command_line.clone(),
+                    stderr,
+                    stderr_router.clone(),
+                );
+            }
+
+            let client = match ().serve(transport).await {
+                Ok(client) => client,
+                Err(error) => {
+                    let stderr_content = stderr_capture.finish().await;
+                    print_external_command_failure(
+                        "mcp.connect_toolset_client",
+                        &label,
+                        &command_line,
+                        "connect-failed",
+                    );
+                    print_external_output_if_present(
+                        "mcp.connect_toolset_client",
+                        &label,
+                        &command_line,
+                        "stderr",
+                        &stderr_content,
+                    )
+                    .await;
+                    return Err(map_client_initialize_error(error));
+                }
+            };
+            let _ = stderr_capture.finish().await;
+
+            Ok(ToolsetClient {
+                service: Arc::new(client),
+                stderr: stderr_router,
+                command_line,
+                label,
+            })
+        }
+        ConfiguredTransport::Remote { url, .. } => {
+            let label = format!("remote:{url}");
+            let client = connect_remote_client(server_name, server)
+                .await
+                .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+            Ok(ToolsetClient {
+                service: Arc::new(client),
+                stderr: ExternalOutputRouter::new(),
+                command_line: url.clone(),
+                label,
+            })
+        }
+    }
 }
 
 struct SmartProxyMcpServer {
@@ -463,7 +485,7 @@ impl SmartProxyMcpServer {
             clients.remove(&toolset.name);
         }
 
-        let client = connect_toolset_client(&toolset.server).await?;
+        let client = connect_toolset_client(&toolset.name, &toolset.server).await?;
         clients.insert(toolset.name.clone(), client.clone());
         Ok(client)
     }
@@ -471,14 +493,13 @@ impl SmartProxyMcpServer {
 
 impl ServerHandler for SmartProxyMcpServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            instructions: Some(
-                "Use `activate_external_mcp` to inspect cached tool names, `activate_external_mcp_tool` to inspect one full cached tool definition, then `call_tool_in_external_mcp` to invoke a specific downstream MCP tool."
-                    .into(),
-            ),
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            ..Default::default()
-        }
+        let mut info = ServerInfo::default();
+        info.instructions = Some(
+            "Use `activate_external_mcp` to inspect cached tool names, `activate_external_mcp_tool` to inspect one full cached tool definition, then `call_tool_in_external_mcp` to invoke a specific downstream MCP tool."
+                .into(),
+        );
+        info.capabilities = ServerCapabilities::builder().enable_tools().build();
+        info
     }
 
     fn list_tools(
@@ -611,16 +632,12 @@ impl ServerHandler for SmartProxyMcpServer {
                     let arguments = parse_tool_arguments_json(&params.args_in_json)?;
                     let client = self.get_or_connect_client(toolset).await?;
                     let stderr_capture = client.stderr.start_capture().await;
-                    match client
-                        .service
-                        .call_tool(CallToolRequestParams {
-                            meta: None,
-                            name: params.tool_name.into(),
-                            arguments,
-                            task: None,
-                        })
-                        .await
-                    {
+                    let request = match arguments {
+                        Some(arguments) => CallToolRequestParams::new(params.tool_name.clone())
+                            .with_arguments(arguments),
+                        None => CallToolRequestParams::new(params.tool_name.clone()),
+                    };
+                    match client.service.call_tool(request).await {
                         Ok(result) => {
                             let _ = stderr_capture.finish().await;
                             Ok(result)

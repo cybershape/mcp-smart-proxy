@@ -9,8 +9,8 @@ use toml::{Table, Value};
 
 use crate::paths::{cache_file_path, expand_tilde, sanitize_name, sibling_backup_path};
 use crate::types::{
-    CachedTools, ClaudeRuntimeConfig, CodexRuntimeConfig, ConfiguredServer, ModelProviderConfig,
-    OpencodeRuntimeConfig,
+    CachedTools, ClaudeRuntimeConfig, CodexRuntimeConfig, ConfiguredServer, ConfiguredTransport,
+    ModelProviderConfig, OpencodeRuntimeConfig,
 };
 
 const DEFAULT_MODEL: &str = "gpt-5.2";
@@ -479,7 +479,7 @@ pub fn configured_server(
         .get("transport")
         .and_then(Value::as_str)
         .unwrap_or("stdio");
-    let (command, args) = match transport {
+    let (configured_transport, command, args, url, headers) = match transport {
         "stdio" => {
             let command = server
                 .get("command")
@@ -503,15 +503,31 @@ pub fn configured_server(
                 .transpose()?
                 .unwrap_or_default();
 
-            (command, args)
+            (
+                ConfiguredTransport::Stdio {
+                    command: command.clone(),
+                    args: args.clone(),
+                },
+                command,
+                args,
+                None,
+                BTreeMap::new(),
+            )
         }
         "remote" => {
             let url = parse_remote_server_url(server, &resolved_name)?;
             let headers =
                 parse_toml_string_table(server.get("headers"), "headers", "server", &resolved_name)?;
-            let resolved = mcp_remote_command(url, &headers).0;
-            let stdio_server = StdioServer::from_command(resolved)?;
-            (stdio_server.command, stdio_server.args)
+            (
+                ConfiguredTransport::Remote {
+                    url: url.to_string(),
+                    headers: headers.clone(),
+                },
+                String::new(),
+                Vec::new(),
+                Some(url.to_string()),
+                headers,
+            )
         }
         other => {
             return Err(format!(
@@ -528,8 +544,11 @@ pub fn configured_server(
     Ok((
         resolved_name,
         ConfiguredServer {
+            transport: configured_transport,
             command,
             args,
+            url,
+            headers,
             env,
             env_vars,
         },
@@ -658,7 +677,10 @@ pub fn update_server_config(
             };
             server.insert("url".to_string(), Value::String(url));
 
-            if update.clear_headers || !update.set_headers.is_empty() || !update.unset_headers.is_empty() {
+            if update.clear_headers
+                || !update.set_headers.is_empty()
+                || !update.unset_headers.is_empty()
+            {
                 let mut headers = if update.clear_headers || current_transport != "remote" {
                     BTreeMap::new()
                 } else {
@@ -3349,10 +3371,7 @@ mod tests {
         );
         assert_eq!(
             plan.servers[0].headers,
-            BTreeMap::from([(
-                "Authorization".to_string(),
-                "Bearer secret".to_string(),
-            )])
+            BTreeMap::from([("Authorization".to_string(), "Bearer secret".to_string(),)])
         );
         assert!(plan.servers[0].env.is_empty());
         assert!(plan.servers[0].env_vars.is_empty());
@@ -4467,7 +4486,10 @@ mod tests {
         let config = load_config_table(&config_path).unwrap();
 
         assert_eq!(server_name, "ones");
-        assert_eq!(config["servers"]["ones"]["transport"].as_str(), Some("remote"));
+        assert_eq!(
+            config["servers"]["ones"]["transport"].as_str(),
+            Some("remote")
+        );
         assert_eq!(
             config["servers"]["ones"]["url"].as_str(),
             Some("https://ones.com/mcp")
@@ -4572,8 +4594,14 @@ mod tests {
         assert_eq!(
             exact_server,
             ConfiguredServer {
+                transport: ConfiguredTransport::Stdio {
+                    command: "uvx".to_string(),
+                    args: vec!["mcp-server".to_string()],
+                },
                 command: "uvx".to_string(),
                 args: vec!["mcp-server".to_string()],
+                url: None,
+                headers: BTreeMap::new(),
                 env: BTreeMap::new(),
                 env_vars: Vec::new(),
             }

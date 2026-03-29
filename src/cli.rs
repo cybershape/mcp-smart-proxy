@@ -89,6 +89,10 @@ pub enum Command {
     Restore { target: InstallTarget },
     /// Remove a configured MCP server and its cached tools.
     Remove { name: String },
+    /// Complete OAuth login for one remote MCP server.
+    Login { name: String },
+    /// Clear stored OAuth credentials for one remote MCP server.
+    Logout { name: String },
     /// Refresh cached tool metadata for one configured MCP server, or all servers when omitted.
     Reload {
         #[arg(long, value_enum)]
@@ -372,6 +376,26 @@ mod tests {
     }
 
     #[test]
+    fn parses_login_server() {
+        let cli = Cli::parse_from(["msp", "login", "remote-demo"]);
+
+        match cli.command {
+            Some(Command::Login { name }) => assert_eq!(name, "remote-demo"),
+            other => panic!("expected login command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_logout_server() {
+        let cli = Cli::parse_from(["msp", "logout", "remote-demo"]);
+
+        match cli.command {
+            Some(Command::Logout { name }) => assert_eq!(name, "remote-demo"),
+            other => panic!("expected logout command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_config_read_command() {
         let cli = Cli::parse_from(["msp", "config", "github"]);
 
@@ -475,7 +499,10 @@ mod tests {
                 assert!(clear_args);
                 assert_eq!(url.as_deref(), Some("https://example.com/mcp"));
                 assert_eq!(enabled, Some(false));
-                assert_eq!(headers, vec!["Authorization=Bearer ${DEMO_TOKEN}".to_string()]);
+                assert_eq!(
+                    headers,
+                    vec!["Authorization=Bearer ${DEMO_TOKEN}".to_string()]
+                );
                 assert_eq!(unset_headers, vec!["X-Old".to_string()]);
                 assert!(clear_headers);
                 assert_eq!(env, vec!["DEMO_REGION=global".to_string()]);

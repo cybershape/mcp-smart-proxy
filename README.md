@@ -27,8 +27,7 @@ Your Agents see only these three tools. When they want to use a tool from a MCP 
 - The `codex` CLI for summary using the `codex` provider
 - The `opencode` CLI for summary using the `opencode` provider
 - The `claude` CLI for summary using the `claude` provider
-- `npx` for running `mcp-remote` when connecting to remote MCP servers
-- `msp` stores remote MCP servers as native `remote` config entries and expands them to `npx -y mcp-remote ...` only when it executes them
+- A browser session for remote MCP servers that require OAuth login
 
 ## Install
 
@@ -181,9 +180,10 @@ Notes:
 
 - The config file only stores managed `servers`.
 - Each server is enabled by default. Set `enabled = false` or run `msp disable <name>` to keep it configured but exclude it from `msp mcp` activation and bulk reload.
-- `transport = "stdio"` servers use `command` plus `args`. `transport = "remote"` servers use `url` plus optional `headers`.
+- `transport = "stdio"` servers use `command` plus `args`. `transport = "remote"` servers use a Streamable HTTP `url` plus optional `headers`.
 - `env` stores static environment variables for the downstream MCP server, while `env_vars` lists variable names that `msp` forwards from its own process environment when it starts that server.
 - `msp config <name>` shows one managed server's current `transport`, `enabled`, `command` / `args` or `url` / `headers`, plus `env` and `env_vars`, and can also update them in place.
+- Remote OAuth configuration is discovered automatically at runtime. Access tokens are cached outside the main config file.
 - `add`, `reload`, and `mcp` require `--provider <codex|opencode|claude>`.
 - `import` accepts `--provider <codex|opencode|claude>` and falls back to the current import source provider when omitted.
 - `codex` uses the built-in default model `gpt-5.2`.
@@ -216,7 +216,7 @@ transport = "remote"
 url = "https://example.com/mcp"
 ```
 
-At execution time, `msp` expands that remote entry to `npx -y mcp-remote <URL>`.
+At execution time, `msp` connects to that remote entry directly through `rmcp` Streamable HTTP. There is no `mcp-remote` fallback path.
 
 Example:
 
@@ -272,7 +272,32 @@ This command:
 6. adds forwarded environment variable names with `--env-var NAME`, removes specific names with `--unset-env-var NAME`, and clears the whole list with `--clear-env-vars`
 7. updates `enabled` with `--enabled true|false`
 
-`msp config --transport stdio` and `msp config --transport remote` are both accepted. Remote servers are still executed through `mcp-remote`, but that expansion happens only at runtime.
+`msp config --transport stdio` and `msp config --transport remote` are both accepted.
+
+### Log in or out of a remote server
+
+Start OAuth login for one remote server:
+
+```bash
+msp login remote-demo
+```
+
+Clear cached OAuth credentials for one remote server:
+
+```bash
+msp logout remote-demo
+```
+
+This command pair:
+
+1. resolves the server by exact or normalized name
+2. requires the server to use `transport = "remote"`
+3. uses OAuth metadata discovered from the remote MCP server instead of extra local OAuth config
+4. starts a local callback listener on an automatically selected random port
+5. opens the browser for authorization when needed
+6. stores OAuth credentials under `~/.cache/mcp-smart-proxy/oauth/<server-name>.json`
+
+Credential reads and writes use a sibling `.lock` file so concurrent login, logout, and automatic token refresh stay serialized per server.
 
 ### Import servers from Codex
 
@@ -485,6 +510,7 @@ This command:
 
 If the fetched tools match the cached tools exactly, `reload` skips the summary call and leaves the cache file unchanged.
 Before refreshing one server's cache, `reload` acquires a sibling `.lock` file for that cache path so concurrent refreshes of the same server serialize instead of duplicating work or racing on cache writes.
+If a remote Streamable HTTP server requires OAuth and cached credentials are missing or expired, `reload` can open a browser and complete login automatically before it retries the request.
 
 The cache is stored at:
 
@@ -645,6 +671,8 @@ Input:
 
 ## Limitations
 
-- Only stdio downstream MCP servers are supported.
+- Downstream MCP servers must use either stdio or Streamable HTTP transport.
+- Remote downstream MCP servers do not fall back to `mcp-remote`.
+- Remote OAuth currently assumes an interactive browser-based authorization code flow.
 - Tool discovery depends on cached metadata produced by `reload`.
 - The proxy does not dynamically list downstream tools as first-class proxy tools; it exposes a fixed activation-and-call interface instead.

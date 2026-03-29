@@ -6,10 +6,25 @@ use rmcp::model::Tool;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfiguredTransport {
+    Stdio {
+        command: String,
+        args: Vec<String>,
+    },
+    Remote {
+        url: String,
+        headers: BTreeMap<String, String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfiguredServer {
+    pub transport: ConfiguredTransport,
     pub command: String,
     pub args: Vec<String>,
+    pub url: Option<String>,
+    pub headers: BTreeMap<String, String>,
     pub env: BTreeMap<String, String>,
     pub env_vars: Vec<String>,
 }
@@ -29,6 +44,27 @@ impl ConfiguredServer {
         }
 
         resolved.into_iter().collect()
+    }
+
+    pub fn resolved_env_map(&self) -> BTreeMap<String, OsString> {
+        self.resolved_env().into_iter().collect()
+    }
+}
+
+impl Default for ConfiguredServer {
+    fn default() -> Self {
+        Self {
+            transport: ConfiguredTransport::Stdio {
+                command: String::new(),
+                args: Vec::new(),
+            },
+            command: String::new(),
+            args: Vec::new(),
+            url: None,
+            headers: BTreeMap::new(),
+            env: BTreeMap::new(),
+            env_vars: Vec::new(),
+        }
     }
 }
 
@@ -118,8 +154,14 @@ mod tests {
         }
 
         let server = ConfiguredServer {
+            transport: ConfiguredTransport::Stdio {
+                command: "demo".to_string(),
+                args: Vec::new(),
+            },
             command: "demo".to_string(),
             args: Vec::new(),
+            url: None,
+            headers: BTreeMap::new(),
             env: BTreeMap::from([("MSP_TEST_OVERRIDDEN".to_string(), "from-config".to_string())]),
             env_vars: vec![
                 "MSP_TEST_FORWARDED".to_string(),
@@ -152,8 +194,17 @@ mod tests {
     fn default_configured_server_has_no_env() {
         let server = ConfiguredServer::default();
 
+        assert!(matches!(
+            server.transport,
+            ConfiguredTransport::Stdio {
+                command: _,
+                args: _
+            }
+        ));
         assert!(server.command.is_empty());
         assert!(server.args.is_empty());
+        assert!(server.url.is_none());
+        assert!(server.headers.is_empty());
         assert!(server.env.is_empty());
         assert!(server.env_vars.is_empty());
     }

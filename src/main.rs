@@ -9,6 +9,7 @@ mod console;
 mod mcp_server;
 mod paths;
 mod reload;
+mod remote;
 mod types;
 mod version_check;
 
@@ -27,7 +28,8 @@ use config::{
 use console::{describe_command, operation_error, print_app_error, print_app_event};
 use paths::expand_tilde;
 use reload::reload_server_with_provider;
-use types::ModelProviderConfig;
+use remote::{login_remote_server, logout_remote_server};
+use types::{ConfiguredTransport, ModelProviderConfig};
 
 #[tokio::main]
 async fn main() {
@@ -740,6 +742,86 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 ),
             );
         }
+        Some(Command::Login { name }) => {
+            let config = load_config_table(&config_path).map_err(|error| {
+                operation_error(
+                    "cli.login.load_config",
+                    format!("failed to load config from {}", config_path.display()),
+                    error,
+                )
+            })?;
+            let (resolved_name, server) =
+                config::configured_server(&config, &name).map_err(|error| {
+                    operation_error(
+                        "cli.login.resolve_server",
+                        format!("failed to resolve configured server `{name}`"),
+                        error,
+                    )
+                })?;
+            if !matches!(server.transport, ConfiguredTransport::Remote { .. }) {
+                return Err(operation_error(
+                    "cli.login.unsupported_transport",
+                    format!("MCP server `{resolved_name}` is not configured as `remote`"),
+                    "only remote servers support OAuth login".into(),
+                ));
+            }
+
+            login_remote_server(&resolved_name, &server)
+                .await
+                .map_err(|error| {
+                    operation_error(
+                        "cli.login",
+                        format!("failed to complete OAuth login for `{resolved_name}`"),
+                        error,
+                    )
+                })?;
+            print_app_event(
+                "cli.login",
+                format!("Completed OAuth login for remote MCP server `{resolved_name}`"),
+            );
+        }
+        Some(Command::Logout { name }) => {
+            let config = load_config_table(&config_path).map_err(|error| {
+                operation_error(
+                    "cli.logout.load_config",
+                    format!("failed to load config from {}", config_path.display()),
+                    error,
+                )
+            })?;
+            let (resolved_name, server) =
+                config::configured_server(&config, &name).map_err(|error| {
+                    operation_error(
+                        "cli.logout.resolve_server",
+                        format!("failed to resolve configured server `{name}`"),
+                        error,
+                    )
+                })?;
+            if !matches!(server.transport, ConfiguredTransport::Remote { .. }) {
+                return Err(operation_error(
+                    "cli.logout.unsupported_transport",
+                    format!("MCP server `{resolved_name}` is not configured as `remote`"),
+                    "only remote servers store OAuth credentials".into(),
+                ));
+            }
+
+            let removed = logout_remote_server(&resolved_name).map_err(|error| {
+                operation_error(
+                    "cli.logout",
+                    format!("failed to clear OAuth credentials for `{resolved_name}`"),
+                    error,
+                )
+            })?;
+            print_app_event(
+                "cli.logout",
+                if removed {
+                    format!("Cleared OAuth credentials for remote MCP server `{resolved_name}`")
+                } else {
+                    format!(
+                        "No stored OAuth credentials found for remote MCP server `{resolved_name}`"
+                    )
+                },
+            );
+        }
         Some(Command::Reload {
             provider,
             name: Some(name),
@@ -1171,14 +1253,16 @@ fn parse_key_value_assignments(
 
     for assignment in assignments {
         let Some((key, value)) = assignment.split_once('=') else {
-            return Err(
-                format!("invalid {flag_name} assignment `{assignment}`; expected `KEY=VALUE`").into(),
-            );
+            return Err(format!(
+                "invalid {flag_name} assignment `{assignment}`; expected `KEY=VALUE`"
+            )
+            .into());
         };
         if key.is_empty() {
-            return Err(
-                format!("invalid {flag_name} assignment `{assignment}`; key must not be empty").into(),
-            );
+            return Err(format!(
+                "invalid {flag_name} assignment `{assignment}`; key must not be empty"
+            )
+            .into());
         }
         env.insert(key.to_string(), value.to_string());
     }
@@ -1255,9 +1339,9 @@ mod tests {
     fn parses_env_assignments_into_sorted_map() {
         let env = parse_key_value_assignments(
             &[
-            "B=two".to_string(),
-            "A=one".to_string(),
-            "B=override".to_string(),
+                "B=two".to_string(),
+                "A=one".to_string(),
+                "B=override".to_string(),
             ],
             "env",
         )

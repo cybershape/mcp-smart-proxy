@@ -18,9 +18,10 @@ use crate::console::{
     spawn_stderr_collector,
 };
 use crate::paths::{cache_file_path, unix_epoch_ms};
+use crate::remote::connect_remote_client;
 use crate::types::{
-    CachedTools, ClaudeRuntimeConfig, CodexRuntimeConfig, ConfiguredServer, ModelProviderConfig,
-    OpencodeRuntimeConfig, ToolSnapshot, tool_snapshot,
+    CachedTools, ClaudeRuntimeConfig, CodexRuntimeConfig, ConfiguredServer, ConfiguredTransport,
+    ModelProviderConfig, OpencodeRuntimeConfig, ToolSnapshot, tool_snapshot,
 };
 
 pub struct ReloadResult {
@@ -142,92 +143,124 @@ async fn fetch_tools(
     server_name: &str,
     server: &ConfiguredServer,
 ) -> Result<Vec<Tool>, Box<dyn Error>> {
-    let command_line = describe_command(&server.command, &server.args);
-    let stderr_router = ExternalOutputRouter::new();
-    let stderr_capture = stderr_router.start_capture().await;
-    let (transport, stderr) = TokioChildProcess::builder(
-        tokio::process::Command::new(&server.command).configure(|cmd| {
-            cmd.args(&server.args);
-            for (name, value) in server.resolved_env() {
-                cmd.env(name, value);
+    match &server.transport {
+        ConfiguredTransport::Stdio { command, args } => {
+            let command_line = describe_command(command, args);
+            let stderr_router = ExternalOutputRouter::new();
+            let stderr_capture = stderr_router.start_capture().await;
+            let (transport, stderr) = TokioChildProcess::builder(
+                tokio::process::Command::new(command).configure(|cmd| {
+                    cmd.args(args);
+                    for (name, value) in server.resolved_env() {
+                        cmd.env(name, value);
+                    }
+                }),
+            )
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| {
+                operation_error(
+                    "reload.fetch_tools.spawn",
+                    format!("failed to start external command `{command_line}`"),
+                    Box::new(error),
+                )
+            })?;
+
+            if let Some(stderr) = stderr {
+                spawn_stderr_collector(
+                    "reload.fetch_tools".to_string(),
+                    server_name.to_string(),
+                    command_line.clone(),
+                    stderr,
+                    stderr_router.clone(),
+                );
             }
-        }),
-    )
-    .stderr(Stdio::piped())
-    .spawn()
-    .map_err(|error| {
-        operation_error(
-            "reload.fetch_tools.spawn",
-            format!("failed to start external command `{command_line}`"),
-            Box::new(error),
-        )
-    })?;
 
-    if let Some(stderr) = stderr {
-        spawn_stderr_collector(
-            "reload.fetch_tools".to_string(),
-            server_name.to_string(),
-            command_line.clone(),
-            stderr,
-            stderr_router.clone(),
-        );
-    }
-
-    let client = match ().serve(transport).await {
-        Ok(client) => client,
-        Err(error) => {
-            print_external_command_failure_async(
-                "reload.fetch_tools",
-                server_name,
-                &command_line,
-                "connect-failed",
-                stderr_capture,
-            )
-            .await;
-            return Err(operation_error(
-                "reload.fetch_tools.connect",
-                format!(
-                    "failed to initialize an MCP client against external command `{command_line}`"
-                ),
-                Box::new(error),
-            ));
+            let client = match ().serve(transport).await {
+                Ok(client) => client,
+                Err(error) => {
+                    print_external_command_failure_async(
+                        "reload.fetch_tools",
+                        server_name,
+                        &command_line,
+                        "connect-failed",
+                        stderr_capture,
+                    )
+                    .await;
+                    return Err(operation_error(
+                        "reload.fetch_tools.connect",
+                        format!(
+                            "failed to initialize an MCP client against external command `{command_line}`"
+                        ),
+                        Box::new(error),
+                    ));
+                }
+            };
+            let tools = match client.list_all_tools().await {
+                Ok(tools) => tools,
+                Err(error) => {
+                    print_external_command_failure_async(
+                        "reload.fetch_tools",
+                        server_name,
+                        &command_line,
+                        "list-tools-failed",
+                        stderr_capture,
+                    )
+                    .await;
+                    return Err(operation_error(
+                        "reload.fetch_tools.list_tools",
+                        format!("failed to list tools from external command `{command_line}`"),
+                        Box::new(error),
+                    ));
+                }
+            };
+            if let Err(error) = client.cancel().await {
+                print_external_command_failure_async(
+                    "reload.fetch_tools",
+                    server_name,
+                    &command_line,
+                    "shutdown-failed",
+                    stderr_capture,
+                )
+                .await;
+                return Err(operation_error(
+                    "reload.fetch_tools.shutdown",
+                    format!("failed to shut down MCP client for `{command_line}`"),
+                    Box::new(error),
+                ));
+            }
+            let _ = stderr_capture.finish().await;
+            Ok(tools)
         }
-    };
-    let tools = match client.list_all_tools().await {
-        Ok(tools) => tools,
-        Err(error) => {
-            print_external_command_failure_async(
-                "reload.fetch_tools",
-                server_name,
-                &command_line,
-                "list-tools-failed",
-                stderr_capture,
-            )
-            .await;
-            return Err(operation_error(
-                "reload.fetch_tools.list_tools",
-                format!("failed to list tools from external command `{command_line}`"),
-                Box::new(error),
-            ));
+        ConfiguredTransport::Remote { url, .. } => {
+            let client = connect_remote_client(server_name, server)
+                .await
+                .map_err(|error| {
+                    operation_error(
+                        "reload.fetch_tools.connect_remote",
+                        format!(
+                            "failed to initialize an MCP client against remote endpoint `{url}`"
+                        ),
+                        error,
+                    )
+                })?;
+            let tools = client.list_all_tools().await.map_err(|error| {
+                operation_error(
+                    "reload.fetch_tools.list_remote_tools",
+                    format!("failed to list tools from remote endpoint `{url}`"),
+                    Box::new(error),
+                )
+            })?;
+            client.cancel().await.map_err(|error| {
+                operation_error(
+                    "reload.fetch_tools.shutdown_remote",
+                    format!("failed to shut down MCP client for remote endpoint `{url}`"),
+                    Box::new(error),
+                )
+            })?;
+            Ok(tools)
         }
-    };
-    if let Err(error) = client.cancel().await {
-        print_external_command_failure_async(
-            "reload.fetch_tools",
-            server_name,
-            &command_line,
-            "shutdown-failed",
-            stderr_capture,
-        )
-        .await;
-        return Err(operation_error(
-            "reload.fetch_tools.shutdown",
-            format!("failed to shut down MCP client for `{command_line}`"),
-            Box::new(error),
-        ));
     }
-    let _ = stderr_capture.finish().await;
-    Ok(tools)
 }
 
 async fn summarize_tools(
