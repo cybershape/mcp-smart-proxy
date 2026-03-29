@@ -53,9 +53,20 @@ impl StdioServer {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct ImportedServerDefinition {
+    command: Vec<String>,
+    url: Option<String>,
+    headers: BTreeMap<String, String>,
+    env: BTreeMap<String, String>,
+    env_vars: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportableServer {
     pub name: String,
     pub command: Vec<String>,
+    pub url: Option<String>,
+    pub headers: BTreeMap<String, String>,
     pub enabled: bool,
     pub env: BTreeMap<String, String>,
     pub env_vars: Vec<String>,
@@ -94,8 +105,10 @@ pub struct ServerConfigSnapshot {
     pub name: String,
     pub transport: String,
     pub enabled: bool,
-    pub command: String,
+    pub command: Option<String>,
     pub args: Vec<String>,
+    pub url: Option<String>,
+    pub headers: BTreeMap<String, String>,
     pub env: BTreeMap<String, String>,
     pub env_vars: Vec<String>,
 }
@@ -106,7 +119,11 @@ pub struct UpdateServerConfig {
     pub command: Option<String>,
     pub clear_args: bool,
     pub add_args: Vec<String>,
+    pub url: Option<String>,
     pub enabled: Option<bool>,
+    pub clear_headers: bool,
+    pub set_headers: BTreeMap<String, String>,
+    pub unset_headers: Vec<String>,
     pub clear_env: bool,
     pub set_env: BTreeMap<String, String>,
     pub unset_env: Vec<String>,
@@ -121,7 +138,11 @@ impl UpdateServerConfig {
             || self.command.is_some()
             || self.clear_args
             || !self.add_args.is_empty()
+            || self.url.is_some()
             || self.enabled.is_some()
+            || self.clear_headers
+            || !self.set_headers.is_empty()
+            || !self.unset_headers.is_empty()
             || self.clear_env
             || !self.set_env.is_empty()
             || !self.unset_env.is_empty()
@@ -166,7 +187,19 @@ pub fn add_server(
     name: &str,
     raw_command: Vec<String>,
 ) -> Result<String, Box<dyn Error>> {
-    save_server(
+    if raw_command.len() == 1 && looks_like_url(&raw_command[0]) {
+        return save_remote_server(
+            config_path,
+            name,
+            raw_command[0].clone(),
+            BTreeMap::new(),
+            true,
+            BTreeMap::new(),
+            Vec::new(),
+        );
+    }
+
+    save_stdio_server(
         config_path,
         name,
         raw_command,
@@ -180,7 +213,19 @@ pub fn import_server(
     config_path: &Path,
     server: &ImportableServer,
 ) -> Result<String, Box<dyn Error>> {
-    save_server(
+    if let Some(url) = &server.url {
+        return save_remote_server(
+            config_path,
+            &server.name,
+            url.clone(),
+            server.headers.clone(),
+            server.enabled,
+            server.env.clone(),
+            server.env_vars.clone(),
+        );
+    }
+
+    save_stdio_server(
         config_path,
         &server.name,
         server.command.clone(),
@@ -190,7 +235,7 @@ pub fn import_server(
     )
 }
 
-fn save_server(
+fn save_stdio_server(
     config_path: &Path,
     name: &str,
     raw_command: Vec<String>,
@@ -198,11 +243,10 @@ fn save_server(
     env: BTreeMap<String, String>,
     env_vars: Vec<String>,
 ) -> Result<String, Box<dyn Error>> {
-    let normalized = normalize_add_command(raw_command);
-    if is_self_server_command(&normalized) {
+    if is_self_server_command(&raw_command) {
         return Err("cannot add `msp mcp` as a managed server".into());
     }
-    let server = StdioServer::from_command(normalized)?;
+    let server = StdioServer::from_command(raw_command)?;
 
     let mut config = load_config_table(config_path)?;
     let name = sanitize_name(name);
@@ -214,6 +258,30 @@ fn save_server(
     }
 
     insert_server(&mut config, &name, &server, enabled, env, env_vars)?;
+    save_config_table(config_path, &config)?;
+
+    Ok(name)
+}
+
+fn save_remote_server(
+    config_path: &Path,
+    name: &str,
+    url: String,
+    headers: BTreeMap<String, String>,
+    enabled: bool,
+    env: BTreeMap<String, String>,
+    env_vars: Vec<String>,
+) -> Result<String, Box<dyn Error>> {
+    let mut config = load_config_table(config_path)?;
+    let name = sanitize_name(name);
+    if name.is_empty() {
+        return Err("server name must contain at least one ASCII letter or digit".into());
+    }
+    if has_server_name(&config, &name) {
+        return Err(format!("server `{name}` already exists").into());
+    }
+
+    insert_remote_server(&mut config, &name, &url, headers, enabled, env, env_vars)?;
     save_config_table(config_path, &config)?;
 
     Ok(name)
@@ -238,34 +306,43 @@ pub fn list_servers(config_path: &Path) -> Result<Vec<ListedServer>, Box<dyn Err
                 .get("transport")
                 .and_then(Value::as_str)
                 .unwrap_or("stdio");
-            if transport != "stdio" {
-                return Err(format!(
-                    "server `{name}` uses unsupported transport `{transport}`, only `stdio` is supported"
-                )
-                .into());
-            }
+            let (command, args) = match transport {
+                "stdio" => {
+                    let command = server
+                        .get("command")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| format!("server `{name}` is missing `command`"))?
+                        .to_string();
 
-            let command = server
-                .get("command")
-                .and_then(Value::as_str)
-                .ok_or_else(|| format!("server `{name}` is missing `command`"))?
-                .to_string();
-
-            let args = server
-                .get("args")
-                .and_then(Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .map(|value| {
-                            value.as_str().map(ToOwned::to_owned).ok_or_else(|| {
-                                format!("server `{name}` contains a non-string arg")
-                            })
+                    let args = server
+                        .get("args")
+                        .and_then(Value::as_array)
+                        .map(|items| {
+                            items
+                                .iter()
+                                .map(|value| {
+                                    value.as_str().map(ToOwned::to_owned).ok_or_else(|| {
+                                        format!("server `{name}` contains a non-string arg")
+                                    })
+                                })
+                                .collect::<Result<Vec<_>, _>>()
                         })
-                        .collect::<Result<Vec<_>, _>>()
-                })
-                .transpose()?
-                .unwrap_or_default();
+                        .transpose()?
+                        .unwrap_or_default();
+
+                    (command, args)
+                }
+                "remote" => (
+                    parse_remote_server_url(server, &name)?.to_string(),
+                    Vec::new(),
+                ),
+                other => {
+                    return Err(format!(
+                        "server `{name}` uses unsupported transport `{other}`, only `stdio` and `remote` are supported"
+                    )
+                    .into())
+                }
+            };
 
             let enabled = parse_server_enabled(server, &name)?;
             let last_updated_at = read_cached_tools_timestamp(&name);
@@ -402,34 +479,47 @@ pub fn configured_server(
         .get("transport")
         .and_then(Value::as_str)
         .unwrap_or("stdio");
-    if transport != "stdio" {
-        return Err(format!(
-            "server `{resolved_name}` uses unsupported transport `{transport}`, only `stdio` is supported"
-        )
-        .into());
-    }
+    let (command, args) = match transport {
+        "stdio" => {
+            let command = server
+                .get("command")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("server `{resolved_name}` is missing `command`"))?
+                .to_string();
 
-    let command = server
-        .get("command")
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("server `{resolved_name}` is missing `command`"))?
-        .to_string();
-
-    let args = server
-        .get("args")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .map(|value| {
-                    value.as_str().map(ToOwned::to_owned).ok_or_else(|| {
-                        format!("server `{resolved_name}` contains a non-string arg")
-                    })
+            let args = server
+                .get("args")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|value| {
+                            value.as_str().map(ToOwned::to_owned).ok_or_else(|| {
+                                format!("server `{resolved_name}` contains a non-string arg")
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()
                 })
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .transpose()?
-        .unwrap_or_default();
+                .transpose()?
+                .unwrap_or_default();
+
+            (command, args)
+        }
+        "remote" => {
+            let url = parse_remote_server_url(server, &resolved_name)?;
+            let headers =
+                parse_toml_string_table(server.get("headers"), "headers", "server", &resolved_name)?;
+            let resolved = mcp_remote_command(url, &headers).0;
+            let stdio_server = StdioServer::from_command(resolved)?;
+            (stdio_server.command, stdio_server.args)
+        }
+        other => {
+            return Err(format!(
+                "server `{resolved_name}` uses unsupported transport `{other}`, only `stdio` and `remote` are supported"
+            )
+            .into())
+        }
+    };
 
     let env = parse_toml_string_table(server.get("env"), "env", "server", &resolved_name)?;
     let env_vars =
@@ -477,32 +567,130 @@ pub fn update_server_config(
     let mut config = load_config_table(config_path)?;
     let resolved_name = {
         let (resolved_name, server) = resolved_server_table_mut(&mut config, requested_name)?;
-
-        if let Some(transport) = &update.transport {
-            if transport != "stdio" {
+        let current_transport = server
+            .get("transport")
+            .and_then(Value::as_str)
+            .unwrap_or("stdio")
+            .to_string();
+        let next_transport = if let Some(url) = &update.url {
+            if !looks_like_url(url) {
                 return Err(format!(
-                    "server `{resolved_name}` uses unsupported transport `{transport}`, only `stdio` is supported"
+                    "server `{resolved_name}` has an invalid remote `url` value `{url}`"
                 )
                 .into());
             }
-            server.insert("transport".to_string(), Value::String(transport.clone()));
+            "remote".to_string()
+        } else if current_transport == "remote" && update.command.is_some() {
+            "stdio".to_string()
+        } else if let Some(transport) = &update.transport {
+            transport.clone()
+        } else {
+            current_transport.clone()
+        };
+
+        match next_transport.as_str() {
+            "stdio" | "remote" => {}
+            other => {
+                return Err(format!(
+                    "server `{resolved_name}` uses unsupported transport `{other}`, only `stdio` and `remote` are supported"
+                )
+                .into())
+            }
         }
 
-        if let Some(command) = &update.command {
-            server.insert("command".to_string(), Value::String(command.clone()));
+        if next_transport == "remote"
+            && (update.command.is_some() || update.clear_args || !update.add_args.is_empty())
+        {
+            return Err(format!(
+                "server `{resolved_name}` uses remote transport; update it with `--url` and header flags instead of `--cmd` or `--arg`"
+            )
+            .into());
         }
 
-        if update.clear_args || !update.add_args.is_empty() {
-            let mut args = if update.clear_args {
-                Vec::new()
-            } else {
-                parse_toml_string_array(server.get("args"), "args", "server", &resolved_name)?
+        if next_transport == "stdio"
+            && current_transport == "remote"
+            && update.command.is_none()
+            && update.transport.as_deref() == Some("stdio")
+        {
+            return Err(format!(
+                "server `{resolved_name}` uses remote transport; pass `--cmd` when converting it to stdio"
+            )
+            .into());
+        }
+
+        server.insert(
+            "transport".to_string(),
+            Value::String(next_transport.clone()),
+        );
+
+        if next_transport == "stdio" {
+            server.remove("url");
+            server.remove("headers");
+
+            if let Some(command) = &update.command {
+                server.insert("command".to_string(), Value::String(command.clone()));
+            } else if current_transport == "remote" {
+                return Err(format!(
+                    "server `{resolved_name}` uses remote transport; pass `--cmd` when converting it to stdio"
+                )
+                .into());
+            }
+
+            if current_transport == "remote" || update.clear_args || !update.add_args.is_empty() {
+                let mut args = if update.clear_args || current_transport == "remote" {
+                    Vec::new()
+                } else {
+                    parse_toml_string_array(server.get("args"), "args", "server", &resolved_name)?
+                };
+                args.extend(update.add_args.iter().cloned());
+                server.insert(
+                    "args".to_string(),
+                    Value::Array(args.into_iter().map(Value::String).collect()),
+                );
+            }
+        } else {
+            server.remove("command");
+            server.remove("args");
+
+            let url = match &update.url {
+                Some(url) => url.clone(),
+                None => parse_remote_server_url(server, &resolved_name)?.to_string(),
             };
-            args.extend(update.add_args.iter().cloned());
-            server.insert(
-                "args".to_string(),
-                Value::Array(args.into_iter().map(Value::String).collect()),
-            );
+            server.insert("url".to_string(), Value::String(url));
+
+            if update.clear_headers || !update.set_headers.is_empty() || !update.unset_headers.is_empty() {
+                let mut headers = if update.clear_headers || current_transport != "remote" {
+                    BTreeMap::new()
+                } else {
+                    parse_toml_string_table(
+                        server.get("headers"),
+                        "headers",
+                        "server",
+                        &resolved_name,
+                    )?
+                };
+                for key in &update.unset_headers {
+                    headers.remove(key);
+                }
+                for (key, value) in &update.set_headers {
+                    headers.insert(key.clone(), value.clone());
+                }
+                if headers.is_empty() {
+                    server.remove("headers");
+                } else {
+                    server.insert(
+                        "headers".to_string(),
+                        Value::Table(
+                            headers
+                                .into_iter()
+                                .map(|(key, value)| (key, Value::String(value)))
+                                .collect(),
+                        ),
+                    );
+                }
+            } else if current_transport != "remote" {
+                server.remove("headers");
+            }
         }
 
         if let Some(enabled) = update.enabled {
@@ -802,14 +990,6 @@ pub fn is_self_server_command(raw_command: &[String]) -> bool {
         && raw_command.get(1).map(String::as_str) == Some(SELF_SUBCOMMAND_NAME)
 }
 
-fn normalize_add_command(raw_command: Vec<String>) -> Vec<String> {
-    if raw_command.len() == 1 && looks_like_url(&raw_command[0]) {
-        return mcp_remote_command(&raw_command[0], &BTreeMap::new()).0;
-    }
-
-    raw_command
-}
-
 fn codex_config_path() -> Result<PathBuf, Box<dyn Error>> {
     if let Some(codex_home) = env::var_os(CODEX_HOME_ENV).filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(codex_home).join("config.toml"));
@@ -1026,19 +1206,21 @@ fn load_codex_servers_for_import_from_path(path: &Path) -> Result<ImportPlan, Bo
             .ok_or_else(|| format!("Codex MCP server `{name}` must be a table"))?;
         validate_importable_codex_server(&name, server)?;
         let enabled = parse_codex_import_server_enabled(server, &name)?;
-        let (raw_command, env, env_vars) = codex_imported_server_command(server, &name)?;
+        let imported = codex_imported_server_command(server, &name)?;
 
-        if is_self_server_command(&raw_command) {
+        if imported.url.is_none() && is_self_server_command(&imported.command) {
             skipped_self_servers.push(name);
             continue;
         }
 
         importable_servers.push(ImportableServer {
             name,
-            command: raw_command,
+            command: imported.command,
+            url: imported.url,
+            headers: imported.headers,
             enabled,
-            env,
-            env_vars,
+            env: imported.env,
+            env_vars: imported.env_vars,
         });
     }
 
@@ -1081,19 +1263,21 @@ fn load_opencode_servers_for_import_from_path(path: &Path) -> Result<ImportPlan,
             .ok_or_else(|| format!("OpenCode MCP server `{name}` must be an object"))?;
         validate_importable_opencode_server(&name, server)?;
         let enabled = parse_opencode_import_server_enabled(server, &name)?;
-        let (raw_command, env, env_vars) = opencode_imported_server_command(server, &name)?;
+        let imported = opencode_imported_server_command(server, &name)?;
 
-        if is_self_server_command(&raw_command) {
+        if imported.url.is_none() && is_self_server_command(&imported.command) {
             skipped_self_servers.push(name);
             continue;
         }
 
         importable_servers.push(ImportableServer {
             name,
-            command: raw_command,
+            command: imported.command,
+            url: imported.url,
+            headers: imported.headers,
             enabled,
-            env,
-            env_vars,
+            env: imported.env,
+            env_vars: imported.env_vars,
         });
     }
 
@@ -1139,19 +1323,21 @@ fn load_claude_servers_for_import_from_path(path: &Path) -> Result<ImportPlan, B
             .as_object()
             .ok_or_else(|| format!("Claude Code MCP server `{name}` must be an object"))?;
         validate_importable_claude_server(&name, server)?;
-        let (raw_command, env, env_vars) = claude_imported_server_command(server, &name)?;
+        let imported = claude_imported_server_command(server, &name)?;
 
-        if is_self_server_command(&raw_command) {
+        if imported.url.is_none() && is_self_server_command(&imported.command) {
             skipped_self_servers.push(name);
             continue;
         }
 
         importable_servers.push(ImportableServer {
             name,
-            command: raw_command,
+            command: imported.command,
+            url: imported.url,
+            headers: imported.headers,
             enabled: true,
-            env,
-            env_vars,
+            env: imported.env,
+            env_vars: imported.env_vars,
         });
     }
 
@@ -1207,12 +1393,73 @@ fn insert_server(
     Ok(())
 }
 
+fn insert_remote_server(
+    config: &mut Table,
+    name: &str,
+    url: &str,
+    headers: BTreeMap<String, String>,
+    enabled: bool,
+    env: BTreeMap<String, String>,
+    env_vars: Vec<String>,
+) -> Result<(), Box<dyn Error>> {
+    let servers_value = config
+        .entry("servers")
+        .or_insert_with(|| Value::Table(Table::new()));
+    let servers = servers_value
+        .as_table_mut()
+        .ok_or_else(|| "`servers` in config must be a table".to_string())?;
+
+    let mut server_table = Table::new();
+    server_table.insert("transport".to_string(), Value::String("remote".to_string()));
+    server_table.insert("url".to_string(), Value::String(url.to_string()));
+    if !headers.is_empty() {
+        server_table.insert(
+            "headers".to_string(),
+            Value::Table(
+                headers
+                    .into_iter()
+                    .map(|(key, value)| (key, Value::String(value)))
+                    .collect(),
+            ),
+        );
+    }
+    if !enabled {
+        server_table.insert("enabled".to_string(), Value::Boolean(false));
+    }
+    if !env.is_empty() {
+        server_table.insert(
+            "env".to_string(),
+            Value::Table(
+                env.into_iter()
+                    .map(|(key, value)| (key, Value::String(value)))
+                    .collect(),
+            ),
+        );
+    }
+    if !env_vars.is_empty() {
+        server_table.insert(
+            "env_vars".to_string(),
+            Value::Array(env_vars.into_iter().map(Value::String).collect()),
+        );
+    }
+
+    servers.insert(name.to_string(), Value::Table(server_table));
+    Ok(())
+}
+
 fn parse_server_enabled(server: &Table, name: &str) -> Result<bool, Box<dyn Error>> {
     match server.get("enabled") {
         Some(Value::Boolean(enabled)) => Ok(*enabled),
         Some(_) => Err(format!("server `{name}` has a non-boolean `enabled` field").into()),
         None => Ok(true),
     }
+}
+
+fn parse_remote_server_url<'a>(server: &'a Table, name: &str) -> Result<&'a str, Box<dyn Error>> {
+    server
+        .get("url")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("server `{name}` is missing `url`").into())
 }
 
 fn parse_codex_import_server_enabled(server: &Table, name: &str) -> Result<bool, Box<dyn Error>> {
@@ -1357,23 +1604,36 @@ fn server_config_snapshot(
         .get("transport")
         .and_then(Value::as_str)
         .unwrap_or("stdio");
-    if transport != "stdio" {
-        return Err(format!(
-            "server `{resolved_name}` uses unsupported transport `{transport}`, only `stdio` is supported"
-        )
-        .into());
-    }
-
-    let command = server
-        .get("command")
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("server `{resolved_name}` is missing `command`"))?
-        .to_string();
-    let args = parse_toml_string_array(server.get("args"), "args", "server", resolved_name)?;
     let enabled = parse_server_enabled(server, resolved_name)?;
     let env = parse_toml_string_table(server.get("env"), "env", "server", resolved_name)?;
     let env_vars =
         parse_toml_string_array(server.get("env_vars"), "env_vars", "server", resolved_name)?;
+    let (command, args, url, headers) = match transport {
+        "stdio" => (
+            Some(
+                server
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("server `{resolved_name}` is missing `command`"))?
+                    .to_string(),
+            ),
+            parse_toml_string_array(server.get("args"), "args", "server", resolved_name)?,
+            None,
+            BTreeMap::new(),
+        ),
+        "remote" => (
+            None,
+            Vec::new(),
+            Some(parse_remote_server_url(server, resolved_name)?.to_string()),
+            parse_toml_string_table(server.get("headers"), "headers", "server", resolved_name)?,
+        ),
+        other => {
+            return Err(format!(
+                "server `{resolved_name}` uses unsupported transport `{other}`, only `stdio` and `remote` are supported"
+            )
+            .into())
+        }
+    };
 
     Ok(ServerConfigSnapshot {
         name: resolved_name.to_string(),
@@ -1381,6 +1641,8 @@ fn server_config_snapshot(
         enabled,
         command,
         args,
+        url,
+        headers,
         env,
         env_vars,
     })
@@ -1389,7 +1651,7 @@ fn server_config_snapshot(
 fn codex_imported_server_command(
     server: &Table,
     name: &str,
-) -> Result<(Vec<String>, BTreeMap<String, String>, Vec<String>), Box<dyn Error>> {
+) -> Result<ImportedServerDefinition, Box<dyn Error>> {
     let env = parse_toml_string_table(server.get("env"), "env", "Codex MCP server", name)?;
     let mut env_vars =
         parse_toml_string_array(server.get("env_vars"), "env_vars", "Codex MCP server", name)?;
@@ -1428,9 +1690,15 @@ fn codex_imported_server_command(
                 )
                 .into());
             }
-            let (command, header_env_vars) = mcp_remote_command(url, &headers);
+            let (_, header_env_vars) = mcp_remote_command(url, &headers);
             merge_env_vars(&mut env_vars, header_env_vars);
-            Ok((command, env, env_vars))
+            Ok(ImportedServerDefinition {
+                command: Vec::new(),
+                url: Some(url.to_string()),
+                headers,
+                env,
+                env_vars,
+            })
         }
         (Some(_), None) => {
             Err(format!("Codex MCP server `{name}` has a non-string `url` field").into())
@@ -1454,7 +1722,13 @@ fn codex_imported_server_command(
             };
             let mut raw_command = vec![command.to_string()];
             raw_command.extend(args);
-            Ok((raw_command, env, env_vars))
+            Ok(ImportedServerDefinition {
+                command: raw_command,
+                url: None,
+                headers: BTreeMap::new(),
+                env,
+                env_vars,
+            })
         }
         (None, None) => {
             Err(format!("Codex MCP server `{name}` is missing `command` or `url`").into())
@@ -1465,7 +1739,7 @@ fn codex_imported_server_command(
 fn opencode_imported_server_command(
     server: &JsonMap<String, JsonValue>,
     name: &str,
-) -> Result<(Vec<String>, BTreeMap<String, String>, Vec<String>), Box<dyn Error>> {
+) -> Result<ImportedServerDefinition, Box<dyn Error>> {
     match server.get("type").and_then(JsonValue::as_str).unwrap_or("local") {
         "local" => {
             let command = server
@@ -1492,7 +1766,13 @@ fn opencode_imported_server_command(
                 "OpenCode MCP server",
                 name,
             )?;
-            Ok((raw_command, env, Vec::new()))
+            Ok(ImportedServerDefinition {
+                command: raw_command,
+                url: None,
+                headers: BTreeMap::new(),
+                env,
+                env_vars: Vec::new(),
+            })
         }
         "remote" => {
             let url = server
@@ -1505,8 +1785,14 @@ fn opencode_imported_server_command(
                 "OpenCode MCP server",
                 name,
             )?;
-            let (command, env_vars) = mcp_remote_command(url, &headers);
-            Ok((command, BTreeMap::new(), env_vars))
+            let (_, env_vars) = mcp_remote_command(url, &headers);
+            Ok(ImportedServerDefinition {
+                command: Vec::new(),
+                url: Some(url.to_string()),
+                headers,
+                env: BTreeMap::new(),
+                env_vars,
+            })
         }
         other => Err(format!(
             "OpenCode MCP server `{name}` uses unsupported type `{other}`, only `local` and `remote` can be imported"
@@ -1518,7 +1804,7 @@ fn opencode_imported_server_command(
 fn claude_imported_server_command(
     server: &JsonMap<String, JsonValue>,
     name: &str,
-) -> Result<(Vec<String>, BTreeMap<String, String>, Vec<String>), Box<dyn Error>> {
+) -> Result<ImportedServerDefinition, Box<dyn Error>> {
     match server.get("type").and_then(JsonValue::as_str).unwrap_or("stdio") {
         "stdio" => {
             let command = server
@@ -1542,10 +1828,17 @@ fn claude_imported_server_command(
                     .into());
                 }
             };
-            let env = parse_json_string_object(server.get("env"), "env", "Claude Code MCP server", name)?;
+            let env =
+                parse_json_string_object(server.get("env"), "env", "Claude Code MCP server", name)?;
             let mut raw_command = vec![command.to_string()];
             raw_command.extend(args);
-            Ok((raw_command, env, Vec::new()))
+            Ok(ImportedServerDefinition {
+                command: raw_command,
+                url: None,
+                headers: BTreeMap::new(),
+                env,
+                env_vars: Vec::new(),
+            })
         }
         "http" | "sse" => {
             let url = server
@@ -1558,8 +1851,14 @@ fn claude_imported_server_command(
                 "Claude Code MCP server",
                 name,
             )?;
-            let (command, env_vars) = mcp_remote_command(url, &headers);
-            Ok((command, BTreeMap::new(), env_vars))
+            let (_, env_vars) = mcp_remote_command(url, &headers);
+            Ok(ImportedServerDefinition {
+                command: Vec::new(),
+                url: Some(url.to_string()),
+                headers,
+                env: BTreeMap::new(),
+                env_vars,
+            })
         }
         other => Err(format!(
             "Claude Code MCP server `{name}` uses unsupported type `{other}`, only `stdio`, `http`, and `sse` can be imported"
@@ -2350,19 +2649,6 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_bare_url_add_command() {
-        assert_eq!(
-            normalize_add_command(vec!["https://ones.com/mcp".to_string()]),
-            vec![
-                "npx".to_string(),
-                "-y".to_string(),
-                "mcp-remote".to_string(),
-                "https://ones.com/mcp".to_string()
-            ]
-        );
-    }
-
-    #[test]
     fn resolves_codex_config_path_from_codex_home() {
         let _guard = env_lock().lock().unwrap();
         let previous_codex_home = env::var(CODEX_HOME_ENV).ok();
@@ -2959,6 +3245,8 @@ mod tests {
                         "-y".to_string(),
                         "@modelcontextprotocol/server-github".to_string(),
                     ],
+                    url: None,
+                    headers: BTreeMap::new(),
                     enabled: true,
                     env: BTreeMap::new(),
                     env_vars: Vec::new(),
@@ -2966,6 +3254,8 @@ mod tests {
                 ImportableServer {
                     name: "beta".to_string(),
                     command: vec!["uvx".to_string(), "beta-server".to_string()],
+                    url: None,
+                    headers: BTreeMap::new(),
                     enabled: true,
                     env: BTreeMap::new(),
                     env_vars: Vec::new(),
@@ -3052,16 +3342,17 @@ mod tests {
         let plan = load_codex_servers_for_import_from_path(&config_path).unwrap();
 
         assert_eq!(plan.servers.len(), 1);
+        assert_eq!(plan.servers[0].command, Vec::<String>::new());
         assert_eq!(
-            plan.servers[0].command,
-            vec![
-                "npx".to_string(),
-                "-y".to_string(),
-                "mcp-remote".to_string(),
-                "https://example.com/mcp".to_string(),
-                "--header".to_string(),
-                "Authorization: Bearer secret".to_string(),
-            ]
+            plan.servers[0].url.as_deref(),
+            Some("https://example.com/mcp")
+        );
+        assert_eq!(
+            plan.servers[0].headers,
+            BTreeMap::from([(
+                "Authorization".to_string(),
+                "Bearer secret".to_string(),
+            )])
         );
         assert!(plan.servers[0].env.is_empty());
         assert!(plan.servers[0].env_vars.is_empty());
@@ -3085,16 +3376,17 @@ mod tests {
         let plan = load_codex_servers_for_import_from_path(&config_path).unwrap();
 
         assert_eq!(plan.servers.len(), 1);
+        assert_eq!(plan.servers[0].command, Vec::<String>::new());
         assert_eq!(
-            plan.servers[0].command,
-            vec![
-                "npx".to_string(),
-                "-y".to_string(),
-                "mcp-remote".to_string(),
-                "https://example.com/mcp".to_string(),
-                "--header".to_string(),
-                "Authorization: Bearer ${DEMO_TOKEN}".to_string(),
-            ]
+            plan.servers[0].url.as_deref(),
+            Some("https://example.com/mcp")
+        );
+        assert_eq!(
+            plan.servers[0].headers,
+            BTreeMap::from([(
+                "Authorization".to_string(),
+                "Bearer {env:DEMO_TOKEN}".to_string(),
+            )])
         );
         assert_eq!(plan.servers[0].env_vars, vec!["DEMO_TOKEN".to_string()]);
 
@@ -3119,16 +3411,17 @@ mod tests {
         let plan = load_codex_servers_for_import_from_path(&config_path).unwrap();
 
         assert_eq!(plan.servers.len(), 1);
+        assert_eq!(plan.servers[0].command, Vec::<String>::new());
         assert_eq!(
-            plan.servers[0].command,
-            vec![
-                "npx".to_string(),
-                "-y".to_string(),
-                "mcp-remote".to_string(),
-                "https://example.com/mcp".to_string(),
-                "--header".to_string(),
-                "X-Workspace: ${DEMO_WORKSPACE}".to_string(),
-            ]
+            plan.servers[0].url.as_deref(),
+            Some("https://example.com/mcp")
+        );
+        assert_eq!(
+            plan.servers[0].headers,
+            BTreeMap::from([(
+                "X-Workspace".to_string(),
+                "{env:DEMO_WORKSPACE}".to_string(),
+            )])
         );
         assert_eq!(plan.servers[0].env_vars, vec!["DEMO_WORKSPACE".to_string()]);
 
@@ -3167,6 +3460,8 @@ mod tests {
                         "-y".to_string(),
                         "@modelcontextprotocol/server-github".to_string(),
                     ],
+                    url: None,
+                    headers: BTreeMap::new(),
                     enabled: true,
                     env: BTreeMap::new(),
                     env_vars: Vec::new(),
@@ -3174,6 +3469,8 @@ mod tests {
                 ImportableServer {
                     name: "beta".to_string(),
                     command: vec!["uvx".to_string(), "beta-server".to_string()],
+                    url: None,
+                    headers: BTreeMap::new(),
                     enabled: true,
                     env: BTreeMap::new(),
                     env_vars: Vec::new(),
@@ -3238,16 +3535,17 @@ mod tests {
         let plan = load_opencode_servers_for_import_from_path(&config_path).unwrap();
 
         assert_eq!(plan.servers.len(), 1);
+        assert_eq!(plan.servers[0].command, Vec::<String>::new());
         assert_eq!(
-            plan.servers[0].command,
-            vec![
-                "npx".to_string(),
-                "-y".to_string(),
-                "mcp-remote".to_string(),
-                "https://example.com/mcp".to_string(),
-                "--header".to_string(),
-                "Authorization: Bearer ${DEMO_TOKEN}".to_string(),
-            ]
+            plan.servers[0].url.as_deref(),
+            Some("https://example.com/mcp")
+        );
+        assert_eq!(
+            plan.servers[0].headers,
+            BTreeMap::from([(
+                "Authorization".to_string(),
+                "Bearer {env:DEMO_TOKEN}".to_string(),
+            )])
         );
         assert!(plan.servers[0].env.is_empty());
         assert_eq!(plan.servers[0].env_vars, vec!["DEMO_TOKEN".to_string()]);
@@ -3291,6 +3589,8 @@ mod tests {
                         "-y".to_string(),
                         "@modelcontextprotocol/server-github".to_string(),
                     ],
+                    url: None,
+                    headers: BTreeMap::new(),
                     enabled: true,
                     env: BTreeMap::from([(
                         "GITHUB_API_URL".to_string(),
@@ -3301,6 +3601,8 @@ mod tests {
                 ImportableServer {
                     name: "beta".to_string(),
                     command: vec!["uvx".to_string(), "beta-server".to_string()],
+                    url: None,
+                    headers: BTreeMap::new(),
                     enabled: true,
                     env: BTreeMap::new(),
                     env_vars: Vec::new(),
@@ -3333,16 +3635,17 @@ mod tests {
         let plan = load_claude_servers_for_import_from_path(&config_path).unwrap();
 
         assert_eq!(plan.servers.len(), 1);
+        assert_eq!(plan.servers[0].command, Vec::<String>::new());
         assert_eq!(
-            plan.servers[0].command,
-            vec![
-                "npx".to_string(),
-                "-y".to_string(),
-                "mcp-remote".to_string(),
-                "https://example.com/mcp".to_string(),
-                "--header".to_string(),
-                "Authorization: Bearer ${DEMO_TOKEN}".to_string(),
-            ]
+            plan.servers[0].url.as_deref(),
+            Some("https://example.com/mcp")
+        );
+        assert_eq!(
+            plan.servers[0].headers,
+            BTreeMap::from([(
+                "Authorization".to_string(),
+                "Bearer ${DEMO_TOKEN}".to_string(),
+            )])
         );
         assert_eq!(plan.servers[0].env_vars, vec!["DEMO_TOKEN".to_string()]);
 
@@ -3411,6 +3714,8 @@ mod tests {
                     "-y".to_string(),
                     "@modelcontextprotocol/server-github".to_string(),
                 ],
+                url: None,
+                headers: BTreeMap::new(),
                 enabled: true,
                 env: BTreeMap::new(),
                 env_vars: Vec::new(),
@@ -3579,6 +3884,8 @@ mod tests {
                     "-y".to_string(),
                     "@modelcontextprotocol/server-github".to_string(),
                 ],
+                url: None,
+                headers: BTreeMap::new(),
                 enabled: true,
                 env: BTreeMap::new(),
                 env_vars: Vec::new(),
@@ -3635,6 +3942,8 @@ mod tests {
                     "-y".to_string(),
                     "@modelcontextprotocol/server-github".to_string(),
                 ],
+                url: None,
+                headers: BTreeMap::new(),
                 enabled: true,
                 env: BTreeMap::new(),
                 env_vars: Vec::new(),
@@ -3711,8 +4020,8 @@ mod tests {
     }
 
     #[test]
-    fn writes_stdio_server_to_config() {
-        let config_path = unique_test_path("write-server-config.toml");
+    fn writes_remote_url_server_to_config() {
+        let config_path = unique_test_path("write-remote-server-config.toml");
         let server_name = add_server(
             &config_path,
             "ones",
@@ -3722,16 +4031,10 @@ mod tests {
         let config = load_config_table(&config_path).unwrap();
 
         let saved = config["servers"][&server_name].as_table().unwrap();
-        assert_eq!(saved["transport"].as_str(), Some("stdio"));
-        assert_eq!(saved["command"].as_str(), Some("npx"));
-        assert_eq!(
-            saved["args"].as_array().unwrap(),
-            &vec![
-                Value::String("-y".to_string()),
-                Value::String("mcp-remote".to_string()),
-                Value::String("https://ones.com/mcp".to_string()),
-            ]
-        );
+        assert_eq!(saved["transport"].as_str(), Some("remote"));
+        assert_eq!(saved["url"].as_str(), Some("https://ones.com/mcp"));
+        assert!(saved.get("command").is_none());
+        assert!(saved.get("args").is_none());
 
         fs::remove_file(config_path).unwrap();
     }
@@ -3743,7 +4046,9 @@ mod tests {
             &config_path,
             &ImportableServer {
                 name: "ones".to_string(),
-                command: vec!["https://ones.com/mcp".to_string()],
+                command: Vec::new(),
+                url: Some("https://ones.com/mcp".to_string()),
+                headers: BTreeMap::new(),
                 enabled: false,
                 env: BTreeMap::new(),
                 env_vars: Vec::new(),
@@ -3770,6 +4075,8 @@ mod tests {
                     "-y".to_string(),
                     "demo-server".to_string(),
                 ],
+                url: None,
+                headers: BTreeMap::new(),
                 enabled: true,
                 env: BTreeMap::from([("DEMO_REGION".to_string(), "global".to_string())]),
                 env_vars: vec!["DEMO_TOKEN".to_string()],
@@ -3815,8 +4122,10 @@ mod tests {
                 name: "demo".to_string(),
                 transport: "stdio".to_string(),
                 enabled: false,
-                command: "uvx".to_string(),
+                command: Some("uvx".to_string()),
                 args: vec!["demo-server".to_string()],
+                url: None,
+                headers: BTreeMap::new(),
                 env: BTreeMap::from([("DEMO_REGION".to_string(), "global".to_string())]),
                 env_vars: vec!["DEMO_TOKEN".to_string()],
             }
@@ -3852,7 +4161,11 @@ mod tests {
                 command: Some("uvx".to_string()),
                 clear_args: true,
                 add_args: vec!["new-server".to_string()],
+                url: None,
                 enabled: Some(true),
+                clear_headers: false,
+                set_headers: BTreeMap::new(),
+                unset_headers: Vec::new(),
                 clear_env: true,
                 set_env: BTreeMap::from([("DEMO_REGION".to_string(), "global".to_string())]),
                 unset_env: vec!["OLD_REGION".to_string()],
@@ -3869,8 +4182,10 @@ mod tests {
                 name: "demo".to_string(),
                 transport: "stdio".to_string(),
                 enabled: true,
-                command: "uvx".to_string(),
+                command: Some("uvx".to_string()),
                 args: vec!["new-server".to_string()],
+                url: None,
+                headers: BTreeMap::new(),
                 env: BTreeMap::from([("DEMO_REGION".to_string(), "global".to_string())]),
                 env_vars: vec!["DEMO_TOKEN".to_string()],
             }
@@ -4152,14 +4467,10 @@ mod tests {
         let config = load_config_table(&config_path).unwrap();
 
         assert_eq!(server_name, "ones");
-        assert_eq!(config["servers"]["ones"]["command"].as_str(), Some("npx"));
+        assert_eq!(config["servers"]["ones"]["transport"].as_str(), Some("remote"));
         assert_eq!(
-            config["servers"]["ones"]["args"].as_array().unwrap(),
-            &vec![
-                Value::String("-y".to_string()),
-                Value::String("mcp-remote".to_string()),
-                Value::String("https://ones.com/mcp".to_string()),
-            ]
+            config["servers"]["ones"]["url"].as_str(),
+            Some("https://ones.com/mcp")
         );
 
         fs::remove_file(config_path).unwrap();

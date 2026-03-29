@@ -101,7 +101,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
             print_app_event(
                 "cli.add",
                 format!(
-                    "Added stdio MCP server `{server_name}` to {} and reloaded cached tools into {}",
+                    "Added MCP server `{server_name}` to {} and reloaded cached tools into {}",
                     config_path.display(),
                     reload_result.cache_path.display()
                 ),
@@ -194,7 +194,11 @@ async fn run() -> Result<(), Box<dyn Error>> {
             command,
             args,
             clear_args,
+            url,
             enabled,
+            headers,
+            unset_headers,
+            clear_headers,
             env,
             unset_env,
             clear_env,
@@ -202,7 +206,14 @@ async fn run() -> Result<(), Box<dyn Error>> {
             unset_env_vars,
             clear_env_vars,
         }) => {
-            let set_env = parse_env_assignments(&env).map_err(|error| {
+            let set_headers = parse_key_value_assignments(&headers, "header").map_err(|error| {
+                operation_error(
+                    "cli.config.parse_headers",
+                    format!("failed to parse `--header` values for server `{name}`"),
+                    error,
+                )
+            })?;
+            let set_env = parse_key_value_assignments(&env, "env").map_err(|error| {
                 operation_error(
                     "cli.config.parse_env",
                     format!("failed to parse `--env` values for server `{name}`"),
@@ -214,7 +225,11 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 command,
                 clear_args,
                 add_args: args,
+                url,
                 enabled,
+                clear_headers,
+                set_headers,
+                unset_headers,
                 clear_env,
                 set_env,
                 unset_env,
@@ -1113,11 +1128,23 @@ fn print_server_config(
     );
     print_app_event(stage, format!("transport: {}", snapshot.transport));
     print_app_event(stage, format!("enabled: {}", snapshot.enabled));
-    print_app_event(stage, format!("command: {}", snapshot.command));
-    if snapshot.args.is_empty() {
-        print_app_event(stage, "args: []");
-    } else {
-        print_app_event(stage, format!("args: [{}]", snapshot.args.join(", ")));
+    if let Some(command) = &snapshot.command {
+        print_app_event(stage, format!("command: {command}"));
+        if snapshot.args.is_empty() {
+            print_app_event(stage, "args: []");
+        } else {
+            print_app_event(stage, format!("args: [{}]", snapshot.args.join(", ")));
+        }
+    }
+    if let Some(url) = &snapshot.url {
+        print_app_event(stage, format!("url: {url}"));
+        if snapshot.headers.is_empty() {
+            print_app_event(stage, "headers: {}");
+        } else {
+            for (key, value) in &snapshot.headers {
+                print_app_event(stage, format!("headers.{key}: {value}"));
+            }
+        }
     }
     if snapshot.env.is_empty() {
         print_app_event(stage, "env: {}");
@@ -1136,20 +1163,21 @@ fn print_server_config(
     }
 }
 
-fn parse_env_assignments(
+fn parse_key_value_assignments(
     assignments: &[String],
+    flag_name: &str,
 ) -> Result<std::collections::BTreeMap<String, String>, Box<dyn Error>> {
     let mut env = std::collections::BTreeMap::new();
 
     for assignment in assignments {
         let Some((key, value)) = assignment.split_once('=') else {
             return Err(
-                format!("invalid env assignment `{assignment}`; expected `KEY=VALUE`").into(),
+                format!("invalid {flag_name} assignment `{assignment}`; expected `KEY=VALUE`").into(),
             );
         };
         if key.is_empty() {
             return Err(
-                format!("invalid env assignment `{assignment}`; key must not be empty").into(),
+                format!("invalid {flag_name} assignment `{assignment}`; key must not be empty").into(),
             );
         }
         env.insert(key.to_string(), value.to_string());
@@ -1225,11 +1253,14 @@ mod tests {
 
     #[test]
     fn parses_env_assignments_into_sorted_map() {
-        let env = parse_env_assignments(&[
+        let env = parse_key_value_assignments(
+            &[
             "B=two".to_string(),
             "A=one".to_string(),
             "B=override".to_string(),
-        ])
+            ],
+            "env",
+        )
         .unwrap();
 
         assert_eq!(
@@ -1243,7 +1274,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_env_assignment() {
-        let error = parse_env_assignments(&["INVALID".to_string()]).unwrap_err();
+        let error = parse_key_value_assignments(&["INVALID".to_string()], "env").unwrap_err();
 
         assert_eq!(
             error.to_string(),

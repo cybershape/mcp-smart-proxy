@@ -23,7 +23,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Add a stdio MCP server and refresh its cached tools.
+    /// Add a managed MCP server and refresh its cached tools.
     Add {
         #[arg(long, value_enum)]
         provider: Option<ProviderName>,
@@ -31,7 +31,7 @@ pub enum Command {
         #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
-    /// List configured stdio MCP servers.
+    /// List configured MCP servers.
     List,
     /// Enable a configured MCP server.
     Enable { name: String },
@@ -48,8 +48,16 @@ pub enum Command {
         args: Vec<String>,
         #[arg(long)]
         clear_args: bool,
+        #[arg(long, value_name = "URL")]
+        url: Option<String>,
         #[arg(long)]
         enabled: Option<bool>,
+        #[arg(long = "header", value_name = "KEY=VALUE")]
+        headers: Vec<String>,
+        #[arg(long = "unset-header", value_name = "KEY")]
+        unset_headers: Vec<String>,
+        #[arg(long)]
+        clear_headers: bool,
         #[arg(long = "env", value_name = "KEY=VALUE")]
         env: Vec<String>,
         #[arg(long = "unset-env", value_name = "KEY")]
@@ -118,12 +126,14 @@ pub enum ProviderName {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ServerTransport {
     Stdio,
+    Remote,
 }
 
 impl ServerTransport {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Stdio => "stdio",
+            Self::Remote => "remote",
         }
     }
 }
@@ -372,7 +382,11 @@ mod tests {
                 command,
                 args,
                 clear_args,
+                url,
                 enabled,
+                headers,
+                unset_headers,
+                clear_headers,
                 env,
                 unset_env,
                 clear_env,
@@ -385,7 +399,11 @@ mod tests {
                 assert_eq!(command, None);
                 assert!(args.is_empty());
                 assert!(!clear_args);
+                assert_eq!(url, None);
                 assert_eq!(enabled, None);
+                assert!(headers.is_empty());
+                assert!(unset_headers.is_empty());
+                assert!(!clear_headers);
                 assert!(env.is_empty());
                 assert!(unset_env.is_empty());
                 assert!(!clear_env);
@@ -410,8 +428,15 @@ mod tests {
             "--clear-args",
             "--arg",
             "demo-server",
+            "--url",
+            "https://example.com/mcp",
             "--enabled",
             "false",
+            "--header",
+            "Authorization=Bearer ${DEMO_TOKEN}",
+            "--unset-header",
+            "X-Old",
+            "--clear-headers",
             "--env",
             "DEMO_REGION=global",
             "--unset-env",
@@ -431,7 +456,11 @@ mod tests {
                 command,
                 args,
                 clear_args,
+                url,
                 enabled,
+                headers,
+                unset_headers,
+                clear_headers,
                 env,
                 unset_env,
                 clear_env,
@@ -444,7 +473,11 @@ mod tests {
                 assert_eq!(command.as_deref(), Some("uvx"));
                 assert_eq!(args, vec!["demo-server".to_string()]);
                 assert!(clear_args);
+                assert_eq!(url.as_deref(), Some("https://example.com/mcp"));
                 assert_eq!(enabled, Some(false));
+                assert_eq!(headers, vec!["Authorization=Bearer ${DEMO_TOKEN}".to_string()]);
+                assert_eq!(unset_headers, vec!["X-Old".to_string()]);
+                assert!(clear_headers);
                 assert_eq!(env, vec!["DEMO_REGION=global".to_string()]);
                 assert_eq!(unset_env, vec!["OLD_KEY".to_string()]);
                 assert!(clear_env);
