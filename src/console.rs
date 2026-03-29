@@ -8,12 +8,6 @@ use tokio::{
     sync::Mutex,
 };
 
-const APP_ERROR_BEGIN: &str = "=== MSP ERROR BEGIN ===";
-const APP_ERROR_END: &str = "=== MSP ERROR END ===";
-const EXTERNAL_COMMAND_BEGIN: &str = "=== MSP EXTERNAL COMMAND FAILURE BEGIN ===";
-const EXTERNAL_COMMAND_END: &str = "=== MSP EXTERNAL COMMAND FAILURE END ===";
-const EXTERNAL_OUTPUT_BEGIN: &str = "=== MSP EXTERNAL OUTPUT BEGIN ===";
-const EXTERNAL_OUTPUT_END: &str = "=== MSP EXTERNAL OUTPUT END ===";
 const MAX_EXTERNAL_OUTPUT_LINES: usize = 1000;
 
 #[derive(Debug, Default)]
@@ -127,12 +121,12 @@ pub fn message_error(stage: &'static str, summary: impl Into<String>) -> Box<dyn
     Box::new(OperationError::new(stage, summary, None))
 }
 
-pub fn print_app_event(stage: &str, message: impl AsRef<str>) {
-    println!("{}", format_app_event_line(stage, message.as_ref()));
+pub fn print_app_event(_stage: &str, message: impl AsRef<str>) {
+    println!("{}", format_app_event_line(message.as_ref()));
 }
 
-pub fn print_app_warning(stage: &str, message: impl AsRef<str>) {
-    eprintln!("{}", format_app_warning_line(stage, message.as_ref()));
+pub fn print_app_warning(_stage: &str, message: impl AsRef<str>) {
+    eprintln!("{}", format_app_warning_line(message.as_ref()));
 }
 
 pub fn print_app_error(error: &(dyn Error + 'static)) {
@@ -156,12 +150,10 @@ pub fn describe_command(command: &str, args: &[String]) -> String {
 }
 
 pub fn print_external_command_failure(stage: &str, label: &str, command_line: &str, status: &str) {
-    eprintln!("{EXTERNAL_COMMAND_BEGIN}");
-    eprintln!("stage: {stage}");
-    eprintln!("target: {label}");
-    eprintln!("command: {command_line}");
-    eprintln!("status: {status}");
-    eprintln!("{EXTERNAL_COMMAND_END}");
+    eprintln!(
+        "{}",
+        format_external_command_failure_block(stage, label, command_line, status)
+    );
 }
 
 pub fn print_external_output_block(
@@ -176,17 +168,10 @@ pub fn print_external_output_block(
         return;
     }
 
-    eprintln!("{EXTERNAL_OUTPUT_BEGIN}");
-    eprintln!("stage: {stage}");
-    eprintln!("target: {label}");
-    eprintln!("command: {command_line}");
-    eprintln!("stream: {stream}");
-    eprintln!("----- {stream} begin -----");
-    for line in trimmed.lines() {
-        eprintln!("{line}");
-    }
-    eprintln!("----- {stream} end -----");
-    eprintln!("{EXTERNAL_OUTPUT_END}");
+    eprintln!(
+        "{}",
+        format_external_output_block(stage, label, command_line, stream, trimmed)
+    );
 }
 
 pub fn spawn_stderr_collector(
@@ -250,25 +235,17 @@ fn error_chain(error: &(dyn Error + 'static)) -> Vec<String> {
     items
 }
 
-fn format_app_event_line(stage: &str, message: &str) -> String {
-    format!(
-        "[MSP][INFO][{}] {}",
-        render_inline_value(stage),
-        render_inline_value(message)
-    )
+fn format_app_event_line(message: &str) -> String {
+    render_inline_value(message)
 }
 
-fn format_app_warning_line(stage: &str, message: &str) -> String {
-    format!(
-        "[MSP][WARN][{}] {}",
-        render_inline_value(stage),
-        render_inline_value(message)
-    )
+fn format_app_warning_line(message: &str) -> String {
+    format!("warning: {}", render_inline_value(message))
 }
 
 fn format_app_error_line(stage: &str, summary: &str, chain: &[String]) -> String {
     let mut lines = vec![
-        APP_ERROR_BEGIN.to_string(),
+        "application error:".to_string(),
         format!("stage: {}", render_inline_value(stage)),
         format!("summary: {}", render_inline_value(summary)),
     ];
@@ -283,7 +260,43 @@ fn format_app_error_line(stage: &str, summary: &str, chain: &[String]) -> String
         );
     }
 
-    lines.push(APP_ERROR_END.to_string());
+    lines.join("\n")
+}
+
+fn format_external_command_failure_block(
+    stage: &str,
+    label: &str,
+    command_line: &str,
+    status: &str,
+) -> String {
+    [
+        "external command failure:".to_string(),
+        format!("stage: {}", render_inline_value(stage)),
+        format!("target: {}", render_inline_value(label)),
+        format!("command: {}", render_inline_value(command_line)),
+        format!("status: {}", render_inline_value(status)),
+    ]
+    .join("\n")
+}
+
+fn format_external_output_block(
+    stage: &str,
+    label: &str,
+    command_line: &str,
+    stream: &str,
+    content: &str,
+) -> String {
+    let mut lines = vec![
+        "external command output:".to_string(),
+        format!("stage: {}", render_inline_value(stage)),
+        format!("target: {}", render_inline_value(label)),
+        format!("command: {}", render_inline_value(command_line)),
+        format!("stream: {}", render_inline_value(stream)),
+        format!("----- {} begin -----", render_inline_value(stream)),
+    ];
+
+    lines.extend(content.lines().map(render_inline_value));
+    lines.push(format!("----- {} end -----", render_inline_value(stream)));
     lines.join("\n")
 }
 
@@ -335,25 +348,22 @@ mod tests {
 
     #[test]
     fn formats_app_event_as_single_line() {
-        assert_eq!(
-            format_app_event_line("cli.config.codex", "Updated config"),
-            "[MSP][INFO][cli.config.codex] Updated config"
-        );
+        assert_eq!(format_app_event_line("Updated config"), "Updated config");
     }
 
     #[test]
     fn formats_app_warning_as_single_line() {
         assert_eq!(
-            format_app_warning_line("startup.version_check", "New version available"),
-            "[MSP][WARN][startup.version_check] New version available"
+            format_app_warning_line("New version available"),
+            "warning: New version available"
         );
     }
 
     #[test]
     fn escapes_control_characters_in_app_logs() {
         assert_eq!(
-            format_app_event_line("cli.test", "line 1\nline 2\tvalue"),
-            "[MSP][INFO][cli.test] line 1\\nline 2\\tvalue"
+            format_app_event_line("line 1\nline 2\tvalue"),
+            "line 1\\nline 2\\tvalue"
         );
     }
 
@@ -370,7 +380,38 @@ mod tests {
 
         assert_eq!(
             line,
-            "=== MSP ERROR BEGIN ===\nstage: reload.fetch_tools.list_tools\nsummary: failed to list tools\ncauses:\n  1. cli.reload: failed to reload MCP server `github`\n  2. reload.fetch_tools: failed to fetch tools from MCP server `github`\n=== MSP ERROR END ==="
+            "application error:\nstage: reload.fetch_tools.list_tools\nsummary: failed to list tools\ncauses:\n  1. cli.reload: failed to reload MCP server `github`\n  2. reload.fetch_tools: failed to fetch tools from MCP server `github`"
+        );
+    }
+
+    #[test]
+    fn formats_external_command_failure_as_labeled_block() {
+        let block = format_external_command_failure_block(
+            "reload.fetch_tools",
+            "github",
+            "npx -y @modelcontextprotocol/server-github",
+            "list-tools-failed",
+        );
+
+        assert_eq!(
+            block,
+            "external command failure:\nstage: reload.fetch_tools\ntarget: github\ncommand: npx -y @modelcontextprotocol/server-github\nstatus: list-tools-failed"
+        );
+    }
+
+    #[test]
+    fn formats_external_output_as_labeled_block() {
+        let block = format_external_output_block(
+            "reload.fetch_tools",
+            "github",
+            "npx -y @modelcontextprotocol/server-github",
+            "stderr",
+            "GitHub token is missing",
+        );
+
+        assert_eq!(
+            block,
+            "external command output:\nstage: reload.fetch_tools\ntarget: github\ncommand: npx -y @modelcontextprotocol/server-github\nstream: stderr\n----- stderr begin -----\nGitHub token is missing\n----- stderr end -----"
         );
     }
 }

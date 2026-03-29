@@ -196,9 +196,8 @@ mod tests {
 
     #[test]
     fn parses_release_version_from_latest_redirect_url() {
-        let url =
-            Url::parse("https://github.com/cybershape/mcp-smart-proxy/releases/tag/v0.0.16")
-                .unwrap();
+        let url = Url::parse("https://github.com/cybershape/mcp-smart-proxy/releases/tag/v0.0.16")
+            .unwrap();
 
         assert_eq!(
             parse_release_version_from_url(&url).as_deref(),

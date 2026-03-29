@@ -70,16 +70,32 @@ async fn run() -> Result<(), Box<dyn Error>> {
                     error,
                 )
             })?;
-            let reload_result =
-                reload_server_with_provider(&config_path, &server_name, &resolved_provider)
-                    .await
-                    .map_err(|error| {
+            let reload_result = match reload_server_with_provider(
+                &config_path,
+                &server_name,
+                &resolved_provider,
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    remove_server(&config_path, &server_name).map_err(|rollback_error| {
                         operation_error(
-                            "cli.add.reload",
-                            format!("failed to reload newly added MCP server `{server_name}`"),
-                            error,
+                            "cli.add.rollback",
+                            format!(
+                                "failed to roll back newly added MCP server `{server_name}` in {} after reload failure",
+                                config_path.display()
+                            ),
+                            rollback_error,
                         )
                     })?;
+                    return Err(operation_error(
+                        "cli.add.reload",
+                        format!("failed to reload newly added MCP server `{server_name}`"),
+                        error,
+                    ));
+                }
+            };
             print_app_event(
                 "cli.add",
                 format!(

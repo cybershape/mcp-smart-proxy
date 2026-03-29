@@ -91,35 +91,34 @@ msp add --provider codex <mcp server name> <command>
 
 `msp` writes structured console output so another AI or operator can distinguish application events from external command output without making humans read raw log blobs.
 
-- Application success output is a single line in the form `[MSP][INFO][stage] message`.
-- Application warnings are a single line on stderr in the form `[MSP][WARN][stage] message`.
-- Application failure output is printed as a short error block with the stage, summary, and numbered causes.
+- Application success output is a single message line without a log prefix.
+- Application warnings are a single line on stderr prefixed with `warning:`.
+- Application failure output is printed as a labeled `application error:` block with the stage, summary, and numbered causes.
 - Successful external commands stay silent.
-- Failed external commands emit `=== MSP EXTERNAL COMMAND FAILURE BEGIN ===` and `=== MSP EXTERNAL COMMAND FAILURE END ===`.
-- External output blocks are printed only for failures and include the stage, target, command line, stream, and fenced stream content markers.
+- Failed external commands emit a labeled `external command failure:` block.
+- External output blocks are printed only for failures and use a labeled `external command output:` block with the stage, target, command line, stream, and fenced stream content markers.
 
 Example success output:
 
 ```text
-[MSP][INFO][cli.reload] Reloaded MCP server `github`. Cache file: /Users/example/.cache/mcp-smart-proxy/github.json
+Reloaded MCP server `github`. Cache file: /Users/example/.cache/mcp-smart-proxy/github.json
 ```
 
 Example warning output:
 
 ```text
-[MSP][WARN][startup.version_check] A newer msp release is available: v0.0.16 (current: v0.0.15). See https://github.com/cybershape/mcp-smart-proxy/releases
+warning: A newer msp release is available: v0.0.16 (current: v0.0.15). See https://github.com/cybershape/mcp-smart-proxy/releases
 ```
 
 Example failure output:
 
 ```text
-=== MSP EXTERNAL COMMAND FAILURE BEGIN ===
+external command failure:
 stage: reload.fetch_tools
 target: github
 command: npx -y @modelcontextprotocol/server-github
 status: list-tools-failed
-=== MSP EXTERNAL COMMAND FAILURE END ===
-=== MSP EXTERNAL OUTPUT BEGIN ===
+external command output:
 stage: reload.fetch_tools
 target: github
 command: npx -y @modelcontextprotocol/server-github
@@ -127,15 +126,13 @@ stream: stderr
 ----- stderr begin -----
 GitHub token is missing
 ----- stderr end -----
-=== MSP EXTERNAL OUTPUT END ===
-=== MSP ERROR BEGIN ===
+application error:
 stage: reload.fetch_tools.list_tools
 summary: failed to list tools from external command `npx -y @modelcontextprotocol/server-github`
 causes:
   1. cli.reload: failed to reload MCP server `github`
   2. reload.fetch_tools: failed to fetch tools from MCP server `github`
   3. reload.fetch_tools.list_tools: failed to list tools from external command `npx -y @modelcontextprotocol/server-github`
-=== MSP ERROR END ===
 ```
 
 ## Configuration
@@ -194,7 +191,7 @@ This command:
 
 1. resolves the summary provider from the required `--provider`
 2. writes the server definition into the config file
-3. immediately runs the same refresh flow as `reload`
+3. immediately runs the same refresh flow as `reload`, and rolls the new server back out of the config if refresh fails
 
 `add` also rejects `msp mcp` so the proxy does not register itself as a downstream server.
 
@@ -241,7 +238,7 @@ This command:
 1. reads Codex MCP servers from `$CODEX_HOME/config.toml` or `~/.codex/config.toml`
 2. imports each server into the `msp` config
 3. preserves each imported server's optional `enabled` flag and defaults to enabled when the source omits it
-4. preserves each imported server's optional `env` table and `env_vars` list
+4. preserves each imported server's optional `env` table and `env_vars` list, and converts remote `url` plus optional `http_headers` into `npx -y mcp-remote ... --header ...`
 5. reloads only imported servers that are enabled
 6. resolves the summary provider with priority `--provider`, then the current import source provider (`codex`)
 
@@ -251,7 +248,7 @@ For example, `msp import --provider opencode codex` imports Codex servers but su
 If a Codex server name already exists in the `msp` config after normalization, that server is skipped.
 If a Codex server launches this proxy with `msp mcp`, that entry is also skipped during import.
 
-Only Codex MCP servers defined with `command`, optional string `args`, optional boolean `enabled`, optional string-to-string `env`, and optional string-array `env_vars` are importable. Entries that rely on other settings such as `cwd` or non-stdio transports are rejected instead of being imported partially.
+Only Codex MCP servers defined with `command`, optional string `args`, optional boolean `enabled`, optional string-to-string `env`, optional string-array `env_vars`, or remote `url` with optional string-to-string `http_headers` are importable. Entries that rely on other settings such as `cwd` are rejected instead of being imported partially.
 
 Running `msp import` without a source prints the command help instead of a missing-argument error.
 
@@ -266,7 +263,7 @@ This command:
 1. reads OpenCode MCP servers from `~/.config/opencode/opencode.json`
 2. imports each server into the `msp` config
 3. preserves each imported server's optional `enabled` flag and defaults to enabled when the source omits it
-4. preserves each imported server's optional `environment` object as `msp` server `env`
+4. preserves each imported local server's optional `environment` object as `msp` server `env`, and converts remote `url` plus optional `headers` into `npx -y mcp-remote ... --header ...`
 5. reloads only imported servers that are enabled
 6. resolves the summary provider with priority `--provider`, then the current import source provider (`opencode`)
 
@@ -276,7 +273,7 @@ For example, `msp import --provider codex opencode` imports OpenCode servers but
 If an OpenCode server name already exists in the `msp` config after normalization, that server is skipped.
 If an OpenCode server launches this proxy with `msp mcp`, that entry is also skipped during import.
 
-Only OpenCode MCP servers defined with a string-array `command`, optional `type = "local"`, optional boolean `enabled`, and optional string-to-string `environment` are importable. Entries that rely on other settings or use non-local server types are rejected instead of being imported partially.
+Only OpenCode MCP servers defined as local servers with a string-array `command`, optional `type = "local"`, optional boolean `enabled`, and optional string-to-string `environment`, or as remote servers with `type = "remote"`, a string `url`, optional boolean `enabled`, and optional string-to-string `headers`, are importable. Other settings are rejected instead of being imported partially.
 
 ### Install this proxy into Codex or OpenCode
 
@@ -361,9 +358,9 @@ Each configured server is emitted on its own application output line with its en
 Example:
 
 ```text
-[MSP][INFO][cli.list] Configured 2 MCP server(s) in /Users/example/.config/mcp-smart-proxy/config.toml (1 enabled, 1 disabled)
-[MSP][INFO][cli.list.server] `github` [enabled]: npx -y @modelcontextprotocol/server-github (last updated: 2026-03-16 10:30:45)
-[MSP][INFO][cli.list.server] `slack` [disabled]: uvx slack-mcp (last updated: never)
+Configured 2 MCP server(s) in /Users/example/.config/mcp-smart-proxy/config.toml (1 enabled, 1 disabled)
+`github` [enabled]: npx -y @modelcontextprotocol/server-github (last updated: 2026-03-16 10:30:45)
+`slack` [disabled]: uvx slack-mcp (last updated: never)
 ```
 
 ### Remove a server
@@ -399,6 +396,7 @@ This command:
 5. if the tools changed, resolves the summary provider from the required `--provider` and writes the cache file
 
 If the fetched tools match the cached tools exactly, `reload` skips the summary call and leaves the cache file unchanged.
+Before refreshing one server's cache, `reload` acquires a sibling `.lock` file for that cache path so concurrent refreshes of the same server serialize instead of duplicating work or racing on cache writes.
 
 The cache is stored at:
 

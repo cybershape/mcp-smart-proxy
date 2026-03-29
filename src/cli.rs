@@ -3,11 +3,12 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 
 pub const DEFAULT_CONFIG_PATH: &str = "~/.config/mcp-smart-proxy/config.toml";
+const CLI_ABOUT: &str = concat!("A smart MCP proxy ", env!("CARGO_PKG_VERSION"));
 
 #[derive(Debug, Parser)]
 #[command(
-    version,
-    about = "A smart MCP proxy",
+    about = CLI_ABOUT,
+    disable_version_flag = true,
     arg_required_else_help = true,
     subcommand_required = true
 )]
@@ -97,7 +98,7 @@ impl ProviderName {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::error::ErrorKind;
+    use clap::{CommandFactory, error::ErrorKind};
 
     #[test]
     fn parses_reload_without_name() {
@@ -277,5 +278,31 @@ mod tests {
             }
             other => panic!("expected disable command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn help_includes_version_in_about_text() {
+        let mut command = Cli::command();
+        let help = command.render_help().to_string();
+
+        assert!(
+            help.contains(CLI_ABOUT),
+            "help did not contain `{CLI_ABOUT}`:\n{help}"
+        );
+    }
+
+    #[test]
+    fn help_does_not_include_version_flag() {
+        let mut command = Cli::command();
+        let help = command.render_help().to_string();
+
+        assert!(
+            !help.contains("--version"),
+            "help unexpectedly included --version:\n{help}"
+        );
+        assert!(
+            !help.contains("-V"),
+            "help unexpectedly included -V:\n{help}"
+        );
     }
 }

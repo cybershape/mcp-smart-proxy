@@ -582,12 +582,7 @@ pub fn is_self_server_command(raw_command: &[String]) -> bool {
 
 fn normalize_add_command(raw_command: Vec<String>) -> Vec<String> {
     if raw_command.len() == 1 && looks_like_url(&raw_command[0]) {
-        return vec![
-            "npx".to_string(),
-            "-y".to_string(),
-            "mcp-remote".to_string(),
-            raw_command[0].clone(),
-        ];
+        return mcp_remote_command(&raw_command[0], &BTreeMap::new()).0;
     }
 
     raw_command
@@ -748,44 +743,12 @@ fn load_codex_servers_for_import_from_path(path: &Path) -> Result<ImportPlan, Bo
             .ok_or_else(|| format!("Codex MCP server `{name}` must be a table"))?;
         validate_importable_codex_server(&name, server)?;
         let enabled = parse_codex_import_server_enabled(server, &name)?;
-
-        let command = server
-            .get("command")
-            .and_then(Value::as_str)
-            .ok_or_else(|| format!("Codex MCP server `{name}` is missing `command`"))?
-            .to_string();
-        let args = match server.get("args") {
-            None => Vec::new(),
-            Some(Value::Array(items)) => items
-                .iter()
-                .map(|value| {
-                    value.as_str().map(ToOwned::to_owned).ok_or_else(|| {
-                        format!("Codex MCP server `{name}` contains a non-string arg")
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-            Some(_) => {
-                return Err(
-                    format!("Codex MCP server `{name}` has a non-array `args` field").into(),
-                );
-            }
-        };
-
-        let mut raw_command = vec![command];
-        raw_command.extend(args);
+        let (raw_command, env, env_vars) = codex_imported_server_command(server, &name)?;
 
         if is_self_server_command(&raw_command) {
             skipped_self_servers.push(name);
             continue;
         }
-
-        let env = parse_toml_string_table(server.get("env"), "env", "Codex MCP server", &name)?;
-        let env_vars = parse_toml_string_array(
-            server.get("env_vars"),
-            "env_vars",
-            "Codex MCP server",
-            &name,
-        )?;
 
         importable_servers.push(ImportableServer {
             name,
@@ -835,44 +798,19 @@ fn load_opencode_servers_for_import_from_path(path: &Path) -> Result<ImportPlan,
             .ok_or_else(|| format!("OpenCode MCP server `{name}` must be an object"))?;
         validate_importable_opencode_server(&name, server)?;
         let enabled = parse_opencode_import_server_enabled(server, &name)?;
-
-        let command = server
-            .get("command")
-            .and_then(serde_json::Value::as_array)
-            .ok_or_else(|| format!("OpenCode MCP server `{name}` is missing `command`"))?;
-        if command.is_empty() {
-            return Err(
-                format!("OpenCode MCP server `{name}` has an empty `command` array").into(),
-            );
-        }
-
-        let raw_command = command
-            .iter()
-            .map(|value| {
-                value.as_str().map(ToOwned::to_owned).ok_or_else(|| {
-                    format!("OpenCode MCP server `{name}` contains a non-string command part")
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let (raw_command, env, env_vars) = opencode_imported_server_command(server, &name)?;
 
         if is_self_server_command(&raw_command) {
             skipped_self_servers.push(name);
             continue;
         }
 
-        let env = parse_json_string_object(
-            server.get("environment"),
-            "environment",
-            "OpenCode MCP server",
-            &name,
-        )?;
-
         importable_servers.push(ImportableServer {
             name,
             command: raw_command,
             enabled,
             env,
-            env_vars: Vec::new(),
+            env_vars,
         });
     }
 
@@ -1029,6 +967,170 @@ fn parse_json_string_object(
             .collect::<Result<BTreeMap<_, _>, _>>()
             .map_err(Into::into),
         Some(_) => Err(format!("{kind} `{name}` has a non-object `{field_name}` field").into()),
+    }
+}
+
+fn codex_imported_server_command(
+    server: &Table,
+    name: &str,
+) -> Result<(Vec<String>, BTreeMap<String, String>, Vec<String>), Box<dyn Error>> {
+    let env = parse_toml_string_table(server.get("env"), "env", "Codex MCP server", name)?;
+    let mut env_vars =
+        parse_toml_string_array(server.get("env_vars"), "env_vars", "Codex MCP server", name)?;
+
+    match (
+        server.get("url"),
+        server.get("command").and_then(Value::as_str),
+    ) {
+        (Some(_), Some(_)) => {
+            Err(format!("Codex MCP server `{name}` cannot define both `url` and `command`").into())
+        }
+        (Some(Value::String(url)), None) => {
+            let headers = parse_toml_string_table(
+                server.get("http_headers"),
+                "http_headers",
+                "Codex MCP server",
+                name,
+            )?;
+            let (command, header_env_vars) = mcp_remote_command(url, &headers);
+            merge_env_vars(&mut env_vars, header_env_vars);
+            Ok((command, env, env_vars))
+        }
+        (Some(_), None) => {
+            Err(format!("Codex MCP server `{name}` has a non-string `url` field").into())
+        }
+        (None, Some(command)) => {
+            let args = match server.get("args") {
+                None => Vec::new(),
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .map(|value| {
+                        value.as_str().map(ToOwned::to_owned).ok_or_else(|| {
+                            format!("Codex MCP server `{name}` contains a non-string arg")
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                Some(_) => {
+                    return Err(
+                        format!("Codex MCP server `{name}` has a non-array `args` field").into(),
+                    );
+                }
+            };
+            let mut raw_command = vec![command.to_string()];
+            raw_command.extend(args);
+            Ok((raw_command, env, env_vars))
+        }
+        (None, None) => {
+            Err(format!("Codex MCP server `{name}` is missing `command` or `url`").into())
+        }
+    }
+}
+
+fn opencode_imported_server_command(
+    server: &JsonMap<String, JsonValue>,
+    name: &str,
+) -> Result<(Vec<String>, BTreeMap<String, String>, Vec<String>), Box<dyn Error>> {
+    match server.get("type").and_then(JsonValue::as_str).unwrap_or("local") {
+        "local" => {
+            let command = server
+                .get("command")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| format!("OpenCode MCP server `{name}` is missing `command`"))?;
+            if command.is_empty() {
+                return Err(
+                    format!("OpenCode MCP server `{name}` has an empty `command` array").into(),
+                );
+            }
+
+            let raw_command = command
+                .iter()
+                .map(|value| {
+                    value.as_str().map(ToOwned::to_owned).ok_or_else(|| {
+                        format!("OpenCode MCP server `{name}` contains a non-string command part")
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let env = parse_json_string_object(
+                server.get("environment"),
+                "environment",
+                "OpenCode MCP server",
+                name,
+            )?;
+            Ok((raw_command, env, Vec::new()))
+        }
+        "remote" => {
+            let url = server
+                .get("url")
+                .and_then(JsonValue::as_str)
+                .ok_or_else(|| format!("OpenCode MCP server `{name}` is missing `url`"))?;
+            let headers = parse_json_string_object(
+                server.get("headers"),
+                "headers",
+                "OpenCode MCP server",
+                name,
+            )?;
+            let (command, env_vars) = mcp_remote_command(url, &headers);
+            Ok((command, BTreeMap::new(), env_vars))
+        }
+        other => Err(format!(
+            "OpenCode MCP server `{name}` uses unsupported type `{other}`, only `local` and `remote` can be imported"
+        )
+        .into()),
+    }
+}
+
+fn mcp_remote_command(url: &str, headers: &BTreeMap<String, String>) -> (Vec<String>, Vec<String>) {
+    let mut command = vec![
+        "npx".to_string(),
+        "-y".to_string(),
+        "mcp-remote".to_string(),
+        url.to_string(),
+    ];
+    let mut env_vars = Vec::new();
+
+    for (name, value) in headers {
+        let (header_value, header_env_vars) = mcp_remote_header_value(value);
+        command.push("--header".to_string());
+        command.push(format!("{name}: {header_value}"));
+        merge_env_vars(&mut env_vars, header_env_vars);
+    }
+
+    (command, env_vars)
+}
+
+fn mcp_remote_header_value(value: &str) -> (String, Vec<String>) {
+    let mut rendered = String::new();
+    let mut env_vars = Vec::new();
+    let mut remaining = value;
+
+    while let Some(start) = remaining.find("{env:") {
+        rendered.push_str(&remaining[..start]);
+        let Some(end) = remaining[start + 5..].find('}') else {
+            rendered.push_str(&remaining[start..]);
+            remaining = "";
+            break;
+        };
+        let name = &remaining[start + 5..start + 5 + end];
+        if name.is_empty() {
+            rendered.push_str(&remaining[start..start + 6 + end]);
+        } else {
+            rendered.push_str("${");
+            rendered.push_str(name);
+            rendered.push('}');
+            merge_env_vars(&mut env_vars, vec![name.to_string()]);
+        }
+        remaining = &remaining[start + 6 + end..];
+    }
+
+    rendered.push_str(remaining);
+    (rendered, env_vars)
+}
+
+fn merge_env_vars(target: &mut Vec<String>, additions: Vec<String>) {
+    for name in additions {
+        if !target.contains(&name) {
+            target.push(name);
+        }
     }
 }
 
@@ -1375,7 +1477,7 @@ fn validate_importable_codex_server(name: &str, server: &Table) -> Result<(), Bo
         .filter(|key| {
             !matches!(
                 key.as_str(),
-                "command" | "args" | "enabled" | "env" | "env_vars"
+                "command" | "args" | "enabled" | "env" | "env_vars" | "url" | "http_headers"
             )
         })
         .map(|key| format!("`{key}`"))
@@ -1386,7 +1488,7 @@ fn validate_importable_codex_server(name: &str, server: &Table) -> Result<(), Bo
     }
 
     Err(format!(
-        "Codex MCP server `{name}` uses unsupported settings {}; only `command`, `args`, and optional `enabled`, `env`, and `env_vars` can be imported",
+        "Codex MCP server `{name}` uses unsupported settings {}; only `command`, `args`, optional `enabled`, `env`, `env_vars`, or remote `url` with optional `http_headers` can be imported",
         unsupported_keys.join(", ")
     )
     .into())
@@ -1396,31 +1498,46 @@ fn validate_importable_opencode_server(
     name: &str,
     server: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), Box<dyn Error>> {
+    let server_type = match server.get("type") {
+        Some(JsonValue::String(value)) => value.as_str(),
+        Some(_) => {
+            return Err(
+                format!("OpenCode MCP server `{name}` has a non-string `type` field").into(),
+            );
+        }
+        None => "local",
+    };
+
+    let supported_keys = match server_type {
+        "local" => ["command", "type", "enabled", "environment"].as_slice(),
+        "remote" => ["url", "type", "enabled", "headers"].as_slice(),
+        other => {
+            return Err(format!(
+                "OpenCode MCP server `{name}` uses unsupported type `{other}`, only `local` and `remote` can be imported"
+            )
+            .into());
+        }
+    };
+
     let unsupported_keys = server
         .keys()
-        .filter(|key| !matches!(key.as_str(), "command" | "type" | "enabled" | "environment"))
+        .filter(|key| !supported_keys.contains(&key.as_str()))
         .map(|key| format!("`{key}`"))
         .collect::<Vec<_>>();
 
-    if !unsupported_keys.is_empty() {
-        return Err(format!(
-            "OpenCode MCP server `{name}` uses unsupported settings {}; only `command` and optional `type`, `enabled`, and `environment` can be imported",
-            unsupported_keys.join(", ")
+    if unsupported_keys.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "OpenCode MCP server `{name}` uses unsupported settings {}; only {} can be imported",
+            unsupported_keys.join(", "),
+            match server_type {
+                "local" => "`command` and optional `type`, `enabled`, and `environment`",
+                "remote" => "`url` and optional `type`, `enabled`, and `headers`",
+                _ => unreachable!(),
+            }
         )
-        .into());
-    }
-
-    let Some(server_type) = server.get("type") else {
-        return Ok(());
-    };
-
-    match server_type.as_str() {
-        Some("local") => Ok(()),
-        Some(other) => Err(format!(
-            "OpenCode MCP server `{name}` uses unsupported type `{other}`, only `local` can be imported"
-        )
-        .into()),
-        None => Err(format!("OpenCode MCP server `{name}` has a non-string `type` field").into()),
+        .into())
     }
 }
 
@@ -2045,6 +2162,41 @@ mod tests {
     }
 
     #[test]
+    fn loads_codex_remote_server_http_headers_for_import() {
+        let config_path = unique_test_path("codex-import-remote.toml");
+        fs::write(
+            &config_path,
+            r#"
+                [mcp_servers.demo]
+                url = "https://example.com/mcp"
+
+                [mcp_servers.demo.http_headers]
+                Authorization = "Bearer secret"
+            "#,
+        )
+        .unwrap();
+
+        let plan = load_codex_servers_for_import_from_path(&config_path).unwrap();
+
+        assert_eq!(plan.servers.len(), 1);
+        assert_eq!(
+            plan.servers[0].command,
+            vec![
+                "npx".to_string(),
+                "-y".to_string(),
+                "mcp-remote".to_string(),
+                "https://example.com/mcp".to_string(),
+                "--header".to_string(),
+                "Authorization: Bearer secret".to_string(),
+            ]
+        );
+        assert!(plan.servers[0].env.is_empty());
+        assert!(plan.servers[0].env_vars.is_empty());
+
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
     fn loads_opencode_servers_for_import_from_path() {
         let config_path = unique_test_path("opencode-import.json");
         fs::write(
@@ -2121,6 +2273,45 @@ mod tests {
             Some(&"global".to_string())
         );
         assert!(plan.servers[0].env_vars.is_empty());
+
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
+    fn loads_opencode_remote_headers_for_import() {
+        let config_path = unique_test_path("opencode-import-remote.json");
+        fs::write(
+            &config_path,
+            r#"{
+                "mcp": {
+                    "demo": {
+                        "type": "remote",
+                        "url": "https://example.com/mcp",
+                        "headers": {
+                            "Authorization": "Bearer {env:DEMO_TOKEN}"
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let plan = load_opencode_servers_for_import_from_path(&config_path).unwrap();
+
+        assert_eq!(plan.servers.len(), 1);
+        assert_eq!(
+            plan.servers[0].command,
+            vec![
+                "npx".to_string(),
+                "-y".to_string(),
+                "mcp-remote".to_string(),
+                "https://example.com/mcp".to_string(),
+                "--header".to_string(),
+                "Authorization: Bearer ${DEMO_TOKEN}".to_string(),
+            ]
+        );
+        assert!(plan.servers[0].env.is_empty());
+        assert_eq!(plan.servers[0].env_vars, vec!["DEMO_TOKEN".to_string()]);
 
         fs::remove_file(config_path).unwrap();
     }
@@ -2228,14 +2419,14 @@ mod tests {
 
     #[test]
     fn rejects_opencode_import_when_server_type_is_not_local() {
-        let config_path = unique_test_path("opencode-import-remote.json");
+        let config_path = unique_test_path("opencode-import-invalid-type.json");
         fs::write(
             &config_path,
             r#"{
                 "mcp": {
                     "demo": {
                         "command": ["npx", "-y", "demo-server"],
-                        "type": "remote"
+                        "type": "stdio"
                     }
                 }
             }"#,
@@ -2246,7 +2437,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "OpenCode MCP server `demo` uses unsupported type `remote`, only `local` can be imported"
+            "OpenCode MCP server `demo` uses unsupported type `stdio`, only `local` and `remote` can be imported"
         );
 
         fs::remove_file(config_path).unwrap();
@@ -2352,7 +2543,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "Codex MCP server `demo` uses unsupported settings `cwd`; only `command`, `args`, and optional `enabled`, `env`, and `env_vars` can be imported"
+            "Codex MCP server `demo` uses unsupported settings `cwd`; only `command`, `args`, optional `enabled`, `env`, `env_vars`, or remote `url` with optional `http_headers` can be imported"
         );
 
         fs::remove_file(config_path).unwrap();
@@ -2475,6 +2666,14 @@ mod tests {
         );
 
         fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
+    fn rewrites_remote_header_env_placeholders_for_mcp_remote() {
+        let (value, env_vars) = mcp_remote_header_value("Bearer {env:DEMO_TOKEN}");
+
+        assert_eq!(value, "Bearer ${DEMO_TOKEN}");
+        assert_eq!(env_vars, vec!["DEMO_TOKEN".to_string()]);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use std::env;
 use std::error::Error;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -66,6 +66,20 @@ async fn reload_server_with_resolved_provider(
             error,
         )
     })?;
+    let cache_path = cache_file_path(&resolved_name).map_err(|error| {
+        operation_error(
+            "reload.cache_path",
+            format!("failed to compute cache path for `{resolved_name}`"),
+            error,
+        )
+    })?;
+    let _reload_lock = acquire_reload_lock(&cache_path).map_err(|error| {
+        operation_error(
+            "reload.lock",
+            format!("failed to acquire refresh lock for `{resolved_name}`"),
+            error,
+        )
+    })?;
     let tools = fetch_tools(&resolved_name, &server)
         .await
         .map_err(|error| {
@@ -75,13 +89,6 @@ async fn reload_server_with_resolved_provider(
                 error,
             )
         })?;
-    let cache_path = cache_file_path(&resolved_name).map_err(|error| {
-        operation_error(
-            "reload.cache_path",
-            format!("failed to compute cache path for `{resolved_name}`"),
-            error,
-        )
-    })?;
     let tool_snapshots = tools.iter().map(tool_snapshot).collect::<Vec<_>>();
     if cached_tools_match(&cache_path, &tool_snapshots).map_err(|error| {
         operation_error(
@@ -567,6 +574,55 @@ fn serialize_tool_snapshots(tools: &[ToolSnapshot]) -> Result<String, Box<dyn Er
     })
 }
 
+struct ReloadLockGuard {
+    _file: File,
+}
+
+fn acquire_reload_lock(cache_path: &Path) -> Result<ReloadLockGuard, Box<dyn Error>> {
+    let lock_path = reload_lock_path(cache_path);
+    if let Some(parent) = lock_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            operation_error(
+                "reload.lock.create_parent",
+                format!("failed to create lock directory {}", parent.display()),
+                Box::new(error),
+            )
+        })?;
+    }
+
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|error| {
+            operation_error(
+                "reload.lock.open",
+                format!("failed to open lock file {}", lock_path.display()),
+                Box::new(error),
+            )
+        })?;
+    file.lock().map_err(|error| {
+        operation_error(
+            "reload.lock.acquire",
+            format!("failed to lock {}", lock_path.display()),
+            Box::new(error),
+        )
+    })?;
+
+    Ok(ReloadLockGuard { _file: file })
+}
+
+fn reload_lock_path(cache_path: &Path) -> PathBuf {
+    let mut file_name = cache_path
+        .file_name()
+        .map(ToOwned::to_owned)
+        .unwrap_or_default();
+    file_name.push(".lock");
+    cache_path.with_file_name(file_name)
+}
+
 fn write_cache(path: &Path, payload: &CachedTools) -> Result<(), Box<dyn Error>> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
@@ -599,6 +655,10 @@ fn write_cache(path: &Path, payload: &CachedTools) -> Result<(), Box<dyn Error>>
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, mpsc};
+    use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn codex_output_path_is_created_in_temp_dir() {
@@ -647,6 +707,60 @@ mod tests {
             error.to_string(),
             "reload.summarize_tools.empty_summary: empty"
         );
+    }
+
+    #[test]
+    fn reload_lock_path_uses_sibling_lock_file() {
+        let cache_path = Path::new("/tmp/github.json");
+
+        assert_eq!(
+            reload_lock_path(cache_path),
+            PathBuf::from("/tmp/github.json.lock")
+        );
+    }
+
+    #[test]
+    fn reload_lock_serializes_concurrent_refreshes_for_the_same_cache() {
+        let cache_path = env::temp_dir().join(format!(
+            "mcp-smart-proxy-reload-lock-{}.json",
+            unix_epoch_ms().unwrap()
+        ));
+        let lock_path = reload_lock_path(&cache_path);
+        let (locked_tx, locked_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let acquired = Arc::new(AtomicBool::new(false));
+
+        let first_cache_path = cache_path.clone();
+        let first = thread::spawn(move || {
+            let _guard = acquire_reload_lock(&first_cache_path).unwrap();
+            locked_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+
+        locked_rx.recv().unwrap();
+
+        let second_cache_path = cache_path.clone();
+        let acquired_clone = Arc::clone(&acquired);
+        let second = thread::spawn(move || {
+            let _guard = acquire_reload_lock(&second_cache_path).unwrap();
+            acquired_clone.store(true, Ordering::SeqCst);
+        });
+
+        thread::sleep(Duration::from_millis(150));
+        assert!(
+            !acquired.load(Ordering::SeqCst),
+            "second refresh acquired the cache lock before the first one released it"
+        );
+
+        release_tx.send(()).unwrap();
+        first.join().unwrap();
+        second.join().unwrap();
+
+        assert!(acquired.load(Ordering::SeqCst));
+
+        if lock_path.exists() {
+            fs::remove_file(lock_path).unwrap();
+        }
     }
 
     #[test]
