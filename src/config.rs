@@ -9,16 +9,20 @@ use toml::{Table, Value};
 
 use crate::paths::{cache_file_path, expand_tilde, sanitize_name, sibling_backup_path};
 use crate::types::{
-    CachedTools, CodexRuntimeConfig, ConfiguredServer, ModelProviderConfig, OpencodeRuntimeConfig,
+    CachedTools, ClaudeRuntimeConfig, CodexRuntimeConfig, ConfiguredServer, ModelProviderConfig,
+    OpencodeRuntimeConfig,
 };
 
 const DEFAULT_MODEL: &str = "gpt-5.2";
 const DEFAULT_OPENCODE_MODEL: &str = "openai/gpt-5.2";
+const DEFAULT_CLAUDE_MODEL: &str = "sonnet";
 const DEFAULT_CODEX_CONFIG_PATH: &str = "~/.codex/config.toml";
 const DEFAULT_OPENCODE_CONFIG_PATH: &str = "~/.config/opencode/opencode.json";
+const DEFAULT_CLAUDE_CONFIG_PATH: &str = "~/.claude.json";
 const CODEX_HOME_ENV: &str = "CODEX_HOME";
 const CODEX_PROVIDER_NAME: &str = "codex";
 const OPENCODE_PROVIDER_NAME: &str = "opencode";
+const CLAUDE_PROVIDER_NAME: &str = "claude";
 const SELF_EXECUTABLE_NAME: &str = "msp";
 const SELF_SUBCOMMAND_NAME: &str = "mcp";
 
@@ -576,6 +580,12 @@ pub fn load_opencode_servers_for_import() -> Result<(PathBuf, ImportPlan), Box<d
     Ok((path, plan))
 }
 
+pub fn load_claude_servers_for_import() -> Result<(PathBuf, ImportPlan), Box<dyn Error>> {
+    let path = claude_config_path()?;
+    let plan = load_claude_servers_for_import_from_path(&path)?;
+    Ok((path, plan))
+}
+
 pub fn install_codex_mcp_server() -> Result<InstallMcpServerResult, Box<dyn Error>> {
     let config_path = codex_config_path()?;
     let mut config = load_config_table(&config_path)?;
@@ -663,6 +673,51 @@ pub fn install_opencode_mcp_server() -> Result<InstallMcpServerResult, Box<dyn E
     })
 }
 
+pub fn install_claude_mcp_server() -> Result<InstallMcpServerResult, Box<dyn Error>> {
+    let config_path = claude_config_path()?;
+    let mut config = load_claude_config(&config_path)?;
+    let desired_server = proxy_stdio_server(CLAUDE_PROVIDER_NAME);
+
+    let (name, status) = {
+        let root = config
+            .as_object_mut()
+            .ok_or_else(|| "Claude Code config root must be a JSON object".to_string())?;
+        let servers_value = root
+            .entry("mcpServers".to_string())
+            .or_insert_with(|| JsonValue::Object(JsonMap::new()));
+        let servers = servers_value
+            .as_object_mut()
+            .ok_or_else(|| "`mcpServers` in Claude Code config must be an object".to_string())?;
+
+        match inspect_claude_self_server(servers, CLAUDE_PROVIDER_NAME) {
+            Some((name, true)) => {
+                return Ok(InstallMcpServerResult {
+                    name,
+                    config_path,
+                    status: InstallMcpServerStatus::AlreadyInstalled,
+                });
+            }
+            Some((name, false)) => {
+                servers.insert(name.clone(), claude_server_value(&desired_server));
+                (name, InstallMcpServerStatus::Updated)
+            }
+            None => {
+                let name = next_available_server_name(servers.keys().map(String::as_str));
+                servers.insert(name.clone(), claude_server_value(&desired_server));
+                (name, InstallMcpServerStatus::Installed)
+            }
+        }
+    };
+
+    save_claude_config(&config_path, &config)?;
+
+    Ok(InstallMcpServerResult {
+        name,
+        config_path,
+        status,
+    })
+}
+
 pub fn replace_codex_mcp_servers() -> Result<ReplaceMcpServersResult, Box<dyn Error>> {
     let config_path = codex_config_path()?;
     replace_codex_mcp_servers_from_path(&config_path)
@@ -673,6 +728,11 @@ pub fn replace_opencode_mcp_servers() -> Result<ReplaceMcpServersResult, Box<dyn
     replace_opencode_mcp_servers_from_path(&config_path)
 }
 
+pub fn replace_claude_mcp_servers() -> Result<ReplaceMcpServersResult, Box<dyn Error>> {
+    let config_path = claude_config_path()?;
+    replace_claude_mcp_servers_from_path(&config_path)
+}
+
 pub fn restore_codex_mcp_servers() -> Result<RestoreMcpServersResult, Box<dyn Error>> {
     let config_path = codex_config_path()?;
     restore_codex_mcp_servers_from_path(&config_path)
@@ -681,6 +741,11 @@ pub fn restore_codex_mcp_servers() -> Result<RestoreMcpServersResult, Box<dyn Er
 pub fn restore_opencode_mcp_servers() -> Result<RestoreMcpServersResult, Box<dyn Error>> {
     let config_path = opencode_config_path()?;
     restore_opencode_mcp_servers_from_path(&config_path)
+}
+
+pub fn restore_claude_mcp_servers() -> Result<RestoreMcpServersResult, Box<dyn Error>> {
+    let config_path = claude_config_path()?;
+    restore_claude_mcp_servers_from_path(&config_path)
 }
 
 pub fn load_codex_runtime_config() -> CodexRuntimeConfig {
@@ -695,12 +760,19 @@ pub fn load_opencode_runtime_config() -> OpencodeRuntimeConfig {
     }
 }
 
+pub fn load_claude_runtime_config() -> ClaudeRuntimeConfig {
+    ClaudeRuntimeConfig {
+        model: DEFAULT_CLAUDE_MODEL.to_string(),
+    }
+}
+
 pub fn load_model_provider_config(provider: &str) -> Result<ModelProviderConfig, Box<dyn Error>> {
     match provider {
         CODEX_PROVIDER_NAME => Ok(ModelProviderConfig::Codex(load_codex_runtime_config())),
         OPENCODE_PROVIDER_NAME => Ok(ModelProviderConfig::Opencode(load_opencode_runtime_config())),
+        CLAUDE_PROVIDER_NAME => Ok(ModelProviderConfig::Claude(load_claude_runtime_config())),
         _ => Err(format!(
-            "unsupported provider `{provider}`; supported providers are `codex` and `opencode`"
+            "unsupported provider `{provider}`; supported providers are `codex`, `opencode`, and `claude`"
         )
         .into()),
     }
@@ -750,6 +822,10 @@ fn opencode_config_path() -> Result<PathBuf, Box<dyn Error>> {
     expand_tilde(Path::new(DEFAULT_OPENCODE_CONFIG_PATH))
 }
 
+fn claude_config_path() -> Result<PathBuf, Box<dyn Error>> {
+    expand_tilde(Path::new(DEFAULT_CLAUDE_CONFIG_PATH))
+}
+
 fn replace_codex_mcp_servers_from_path(
     config_path: &Path,
 ) -> Result<ReplaceMcpServersResult, Box<dyn Error>> {
@@ -793,6 +869,34 @@ fn replace_opencode_mcp_servers_from_path(
 
     if root.remove("mcp").is_some() {
         save_opencode_config(config_path, &config)?;
+    }
+
+    Ok(ReplaceMcpServersResult {
+        config_path: config_path.to_path_buf(),
+        backup_path,
+        backed_up_server_count: existing_servers.len(),
+        removed_server_count: existing_servers.len(),
+    })
+}
+
+fn replace_claude_mcp_servers_from_path(
+    config_path: &Path,
+) -> Result<ReplaceMcpServersResult, Box<dyn Error>> {
+    let mut config = load_claude_config(config_path)?;
+    let root = config
+        .as_object_mut()
+        .ok_or_else(|| "Claude Code config root must be a JSON object".to_string())?;
+    let existing_servers = match root.get("mcpServers") {
+        None => JsonMap::new(),
+        Some(JsonValue::Object(servers)) => servers.clone(),
+        Some(_) => return Err("`mcpServers` in Claude Code config must be an object".into()),
+    };
+    let backup_path = sibling_backup_path(config_path, "msp-backup");
+
+    merge_claude_servers_into_backup(&backup_path, &existing_servers)?;
+
+    if root.remove("mcpServers").is_some() {
+        save_claude_config(config_path, &config)?;
     }
 
     Ok(ReplaceMcpServersResult {
@@ -852,6 +956,35 @@ fn restore_opencode_mcp_servers_from_path(
     let removed_self_server_count = remove_opencode_self_servers(&mut config)?;
     merge_opencode_servers_into_target(&mut config, &restored_servers)?;
     save_opencode_config(config_path, &config)?;
+
+    Ok(RestoreMcpServersResult {
+        config_path: config_path.to_path_buf(),
+        backup_path,
+        removed_self_server_count,
+        restored_server_count: restored_servers.len(),
+    })
+}
+
+fn restore_claude_mcp_servers_from_path(
+    config_path: &Path,
+) -> Result<RestoreMcpServersResult, Box<dyn Error>> {
+    let backup_path = sibling_backup_path(config_path, "msp-backup");
+    let backup = load_required_claude_backup(&backup_path)?;
+    let restored_servers = backup
+        .get("mcpServers")
+        .and_then(JsonValue::as_object)
+        .ok_or_else(|| {
+            format!(
+                "no `mcpServers` object found in Claude Code backup {}",
+                backup_path.display()
+            )
+        })?
+        .clone();
+
+    let mut config = load_claude_config(config_path)?;
+    let removed_self_server_count = remove_claude_self_servers(&mut config)?;
+    merge_claude_servers_into_target(&mut config, &restored_servers)?;
+    save_claude_config(config_path, &config)?;
 
     Ok(RestoreMcpServersResult {
         config_path: config_path.to_path_buf(),
@@ -959,6 +1092,64 @@ fn load_opencode_servers_for_import_from_path(path: &Path) -> Result<ImportPlan,
             name,
             command: raw_command,
             enabled,
+            env,
+            env_vars,
+        });
+    }
+
+    Ok(ImportPlan {
+        servers: importable_servers,
+        skipped_self_servers,
+    })
+}
+
+fn load_claude_servers_for_import_from_path(path: &Path) -> Result<ImportPlan, Box<dyn Error>> {
+    if !path.exists() {
+        return Err(format!("Claude Code config not found at {}", path.display()).into());
+    }
+
+    let contents = fs::read_to_string(path)?;
+    let config: serde_json::Value = serde_json::from_str(&contents)?;
+    let servers = config
+        .get("mcpServers")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| {
+            format!(
+                "no `mcpServers` object found in Claude Code config {}",
+                path.display()
+            )
+        })?;
+
+    if servers.is_empty() {
+        return Err(format!(
+            "no MCP servers found in Claude Code config {}",
+            path.display()
+        )
+        .into());
+    }
+
+    let mut names = servers.keys().cloned().collect::<Vec<_>>();
+    names.sort();
+
+    let mut importable_servers = Vec::new();
+    let mut skipped_self_servers = Vec::new();
+
+    for name in names {
+        let server = servers[&name]
+            .as_object()
+            .ok_or_else(|| format!("Claude Code MCP server `{name}` must be an object"))?;
+        validate_importable_claude_server(&name, server)?;
+        let (raw_command, env, env_vars) = claude_imported_server_command(server, &name)?;
+
+        if is_self_server_command(&raw_command) {
+            skipped_self_servers.push(name);
+            continue;
+        }
+
+        importable_servers.push(ImportableServer {
+            name,
+            command: raw_command,
+            enabled: true,
             env,
             env_vars,
         });
@@ -1324,6 +1515,59 @@ fn opencode_imported_server_command(
     }
 }
 
+fn claude_imported_server_command(
+    server: &JsonMap<String, JsonValue>,
+    name: &str,
+) -> Result<(Vec<String>, BTreeMap<String, String>, Vec<String>), Box<dyn Error>> {
+    match server.get("type").and_then(JsonValue::as_str).unwrap_or("stdio") {
+        "stdio" => {
+            let command = server
+                .get("command")
+                .and_then(JsonValue::as_str)
+                .ok_or_else(|| format!("Claude Code MCP server `{name}` is missing `command`"))?;
+            let args = match server.get("args") {
+                None => Vec::new(),
+                Some(JsonValue::Array(items)) => items
+                    .iter()
+                    .map(|value| {
+                        value.as_str().map(ToOwned::to_owned).ok_or_else(|| {
+                            format!("Claude Code MCP server `{name}` contains a non-string arg")
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                Some(_) => {
+                    return Err(format!(
+                        "Claude Code MCP server `{name}` has a non-array `args` field"
+                    )
+                    .into());
+                }
+            };
+            let env = parse_json_string_object(server.get("env"), "env", "Claude Code MCP server", name)?;
+            let mut raw_command = vec![command.to_string()];
+            raw_command.extend(args);
+            Ok((raw_command, env, Vec::new()))
+        }
+        "http" | "sse" => {
+            let url = server
+                .get("url")
+                .and_then(JsonValue::as_str)
+                .ok_or_else(|| format!("Claude Code MCP server `{name}` is missing `url`"))?;
+            let headers = parse_json_string_object(
+                server.get("headers"),
+                "headers",
+                "Claude Code MCP server",
+                name,
+            )?;
+            let (command, env_vars) = mcp_remote_command(url, &headers);
+            Ok((command, BTreeMap::new(), env_vars))
+        }
+        other => Err(format!(
+            "Claude Code MCP server `{name}` uses unsupported type `{other}`, only `stdio`, `http`, and `sse` can be imported"
+        )
+        .into()),
+    }
+}
+
 fn mcp_remote_command(url: &str, headers: &BTreeMap<String, String>) -> (Vec<String>, Vec<String>) {
     let mut command = vec![
         "npx".to_string(),
@@ -1368,7 +1612,28 @@ fn mcp_remote_header_value(value: &str) -> (String, Vec<String>) {
     }
 
     rendered.push_str(remaining);
+    collect_dollar_brace_env_vars(&rendered, &mut env_vars);
     (rendered, env_vars)
+}
+
+fn collect_dollar_brace_env_vars(value: &str, env_vars: &mut Vec<String>) {
+    let mut remaining = value;
+
+    while let Some(start) = remaining.find("${") {
+        let after_start = &remaining[start + 2..];
+        let Some(end) = after_start.find('}') else {
+            break;
+        };
+        let expression = &after_start[..end];
+        let name = expression
+            .split_once(":-")
+            .map(|(name, _)| name)
+            .unwrap_or(expression);
+        if !name.is_empty() {
+            merge_env_vars(env_vars, vec![name.to_string()]);
+        }
+        remaining = &after_start[end + 1..];
+    }
 }
 
 fn merge_env_vars(target: &mut Vec<String>, additions: Vec<String>) {
@@ -1401,6 +1666,20 @@ fn opencode_server_value(server: &StdioServer) -> JsonValue {
                     .map(JsonValue::String)
                     .collect(),
             ),
+        ),
+    ]))
+}
+
+fn claude_server_value(server: &StdioServer) -> JsonValue {
+    JsonValue::Object(JsonMap::from_iter([
+        ("type".to_string(), JsonValue::String("stdio".to_string())),
+        (
+            "command".to_string(),
+            JsonValue::String(server.command.clone()),
+        ),
+        (
+            "args".to_string(),
+            JsonValue::Array(server.args.iter().cloned().map(JsonValue::String).collect()),
         ),
     ]))
 }
@@ -1462,6 +1741,20 @@ fn inspect_opencode_self_server(
     )
 }
 
+fn inspect_claude_self_server(
+    servers: &JsonMap<String, JsonValue>,
+    provider: &str,
+) -> Option<(String, bool)> {
+    inspect_self_server(
+        servers.iter().filter_map(|(name, value)| {
+            let server = value.as_object()?;
+            let raw_command = claude_server_raw_command(server)?;
+            Some((name.clone(), raw_command))
+        }),
+        provider,
+    )
+}
+
 fn inspect_self_server(
     candidates: impl Iterator<Item = (String, Vec<String>)>,
     provider: &str,
@@ -1504,6 +1797,31 @@ fn opencode_server_raw_command(server: &JsonMap<String, JsonValue>) -> Option<Ve
         .iter()
         .map(|value| value.as_str().map(ToOwned::to_owned))
         .collect()
+}
+
+fn claude_server_raw_command(server: &JsonMap<String, JsonValue>) -> Option<Vec<String>> {
+    match server
+        .get("type")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("stdio")
+    {
+        "stdio" => {
+            let command = server.get("command")?.as_str()?.to_string();
+            let args = match server.get("args") {
+                None => Vec::new(),
+                Some(JsonValue::Array(items)) => items
+                    .iter()
+                    .map(|value| value.as_str().map(ToOwned::to_owned))
+                    .collect::<Option<Vec<_>>>()?,
+                Some(_) => return None,
+            };
+
+            let mut raw_command = vec![command];
+            raw_command.extend(args);
+            Some(raw_command)
+        }
+        _ => None,
+    }
 }
 
 fn self_server_uses_provider(raw_command: &[String], provider: &str) -> bool {
@@ -1559,6 +1877,26 @@ fn save_opencode_config(path: &Path, config: &JsonValue) -> Result<(), Box<dyn E
     Ok(())
 }
 
+fn load_claude_config(path: &Path) -> Result<JsonValue, Box<dyn Error>> {
+    if !path.exists() {
+        return Ok(JsonValue::Object(JsonMap::new()));
+    }
+
+    let contents = fs::read_to_string(path)?;
+    let value = serde_json::from_str(&contents)?;
+    Ok(value)
+}
+
+fn save_claude_config(path: &Path, config: &JsonValue) -> Result<(), Box<dyn Error>> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let contents = serde_json::to_string_pretty(config)?;
+    fs::write(path, contents)?;
+    Ok(())
+}
+
 fn merge_codex_servers_into_backup(
     backup_path: &Path,
     servers: &Table,
@@ -1602,6 +1940,29 @@ fn merge_opencode_servers_into_backup(
     Ok(())
 }
 
+fn merge_claude_servers_into_backup(
+    backup_path: &Path,
+    servers: &JsonMap<String, JsonValue>,
+) -> Result<(), Box<dyn Error>> {
+    let mut backup = load_claude_config(backup_path)?;
+    let root = backup
+        .as_object_mut()
+        .ok_or_else(|| "Claude Code backup root must be a JSON object".to_string())?;
+    let backup_servers_value = root
+        .entry("mcpServers".to_string())
+        .or_insert_with(|| JsonValue::Object(JsonMap::new()));
+    let backup_servers = backup_servers_value
+        .as_object_mut()
+        .ok_or_else(|| "`mcpServers` in Claude Code backup must be an object".to_string())?;
+
+    for (name, server) in servers {
+        backup_servers.insert(name.clone(), server.clone());
+    }
+
+    save_claude_config(backup_path, &backup)?;
+    Ok(())
+}
+
 fn merge_codex_servers_into_target(
     config: &mut Table,
     servers: &Table,
@@ -1641,6 +2002,27 @@ fn merge_opencode_servers_into_target(
     Ok(())
 }
 
+fn merge_claude_servers_into_target(
+    config: &mut JsonValue,
+    servers: &JsonMap<String, JsonValue>,
+) -> Result<(), Box<dyn Error>> {
+    let root = config
+        .as_object_mut()
+        .ok_or_else(|| "Claude Code config root must be a JSON object".to_string())?;
+    let target_servers_value = root
+        .entry("mcpServers".to_string())
+        .or_insert_with(|| JsonValue::Object(JsonMap::new()));
+    let target_servers = target_servers_value
+        .as_object_mut()
+        .ok_or_else(|| "`mcpServers` in Claude Code config must be an object".to_string())?;
+
+    for (name, server) in servers {
+        target_servers.insert(name.clone(), server.clone());
+    }
+
+    Ok(())
+}
+
 fn load_required_codex_backup(path: &Path) -> Result<Table, Box<dyn Error>> {
     if !path.exists() {
         return Err(format!("Codex backup not found at {}", path.display()).into());
@@ -1655,6 +2037,14 @@ fn load_required_opencode_backup(path: &Path) -> Result<JsonValue, Box<dyn Error
     }
 
     load_opencode_config(path)
+}
+
+fn load_required_claude_backup(path: &Path) -> Result<JsonValue, Box<dyn Error>> {
+    if !path.exists() {
+        return Err(format!("Claude Code backup not found at {}", path.display()).into());
+    }
+
+    load_claude_config(path)
 }
 
 fn remove_codex_self_servers(config: &mut Table) -> Result<usize, Box<dyn Error>> {
@@ -1711,6 +2101,37 @@ fn remove_opencode_self_servers(config: &mut JsonValue) -> Result<usize, Box<dyn
 
     if servers.is_empty() {
         root.remove("mcp");
+    }
+
+    Ok(names.len())
+}
+
+fn remove_claude_self_servers(config: &mut JsonValue) -> Result<usize, Box<dyn Error>> {
+    let Some(root) = config.as_object_mut() else {
+        return Err("Claude Code config root must be a JSON object".into());
+    };
+    let Some(servers_value) = root.get_mut("mcpServers") else {
+        return Ok(0);
+    };
+    let servers = servers_value
+        .as_object_mut()
+        .ok_or_else(|| "`mcpServers` in Claude Code config must be an object".to_string())?;
+
+    let names = servers
+        .iter()
+        .filter_map(|(name, value)| {
+            let server = value.as_object()?;
+            let raw_command = claude_server_raw_command(server)?;
+            is_self_server_command(&raw_command).then_some(name.clone())
+        })
+        .collect::<Vec<_>>();
+
+    for name in &names {
+        servers.remove(name);
+    }
+
+    if servers.is_empty() {
+        root.remove("mcpServers");
     }
 
     Ok(names.len())
@@ -1787,6 +2208,53 @@ fn validate_importable_opencode_server(
             match server_type {
                 "local" => "`command` and optional `type`, `enabled`, and `environment`",
                 "remote" => "`url` and optional `type`, `enabled`, and `headers`",
+                _ => unreachable!(),
+            }
+        )
+        .into())
+    }
+}
+
+fn validate_importable_claude_server(
+    name: &str,
+    server: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), Box<dyn Error>> {
+    let server_type = match server.get("type") {
+        Some(JsonValue::String(value)) => value.as_str(),
+        Some(_) => {
+            return Err(
+                format!("Claude Code MCP server `{name}` has a non-string `type` field").into(),
+            );
+        }
+        None => "stdio",
+    };
+
+    let supported_keys = match server_type {
+        "stdio" => ["command", "args", "env", "type"].as_slice(),
+        "http" | "sse" => ["url", "headers", "type"].as_slice(),
+        other => {
+            return Err(format!(
+                "Claude Code MCP server `{name}` uses unsupported type `{other}`, only `stdio`, `http`, and `sse` can be imported"
+            )
+            .into());
+        }
+    };
+
+    let unsupported_keys = server
+        .keys()
+        .filter(|key| !supported_keys.contains(&key.as_str()))
+        .map(|key| format!("`{key}`"))
+        .collect::<Vec<_>>();
+
+    if unsupported_keys.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Claude Code MCP server `{name}` uses unsupported settings {}; only {} can be imported",
+            unsupported_keys.join(", "),
+            match server_type {
+                "stdio" => "`command`, optional `args`, optional `env`, and optional `type`",
+                "http" | "sse" => "`url`, optional `headers`, and optional `type`",
                 _ => unreachable!(),
             }
         )
@@ -2033,6 +2501,36 @@ mod tests {
                     JsonValue::String("mcp".to_string()),
                     JsonValue::String("--provider".to_string()),
                     JsonValue::String("opencode".to_string()),
+                ]
+            );
+        });
+
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn installs_claude_mcp_server_when_missing() {
+        let home = unique_test_path("claude-install-home");
+        fs::create_dir_all(&home).unwrap();
+
+        with_home_env(&home, || {
+            let installed = install_claude_mcp_server().unwrap();
+
+            assert_eq!(installed.name, "msp");
+            assert_eq!(installed.status, InstallMcpServerStatus::Installed);
+            assert_eq!(installed.config_path, home.join(".claude.json"));
+
+            let contents = fs::read_to_string(&installed.config_path).unwrap();
+            let config: JsonValue = serde_json::from_str(&contents).unwrap();
+            let server = config["mcpServers"]["msp"].as_object().unwrap();
+            assert_eq!(server["type"].as_str(), Some("stdio"));
+            assert_eq!(server["command"].as_str(), Some("msp"));
+            assert_eq!(
+                server["args"].as_array().unwrap(),
+                &vec![
+                    JsonValue::String("mcp".to_string()),
+                    JsonValue::String("--provider".to_string()),
+                    JsonValue::String("claude".to_string()),
                 ]
             );
         });
@@ -2305,6 +2803,128 @@ mod tests {
                 JsonValue::String("beta-server".to_string()),
             ]
         );
+
+        fs::remove_file(config_path).unwrap();
+        fs::remove_file(backup_path).unwrap();
+    }
+
+    #[test]
+    fn replaces_claude_servers_after_merging_backup_without_duplicates() {
+        let config_path = unique_test_path("claude-replace.json");
+        let backup_path = sibling_backup_path(&config_path, "msp-backup");
+        fs::write(
+            &config_path,
+            r#"{
+                "mcpServers": {
+                    "alpha": {
+                        "type": "stdio",
+                        "command": "npx",
+                        "args": ["-y", "alpha-server"]
+                    },
+                    "beta": {
+                        "type": "stdio",
+                        "command": "uvx",
+                        "args": ["beta-server"]
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            &backup_path,
+            r#"{
+                "mcpServers": {
+                    "beta": {
+                        "type": "stdio",
+                        "command": "old",
+                        "args": ["beta-old"]
+                    },
+                    "gamma": {
+                        "type": "stdio",
+                        "command": "npx",
+                        "args": ["-y", "gamma-server"]
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let replaced = replace_claude_mcp_servers_from_path(&config_path).unwrap();
+
+        assert_eq!(replaced.config_path, config_path);
+        assert_eq!(replaced.backup_path, backup_path);
+        assert_eq!(replaced.backed_up_server_count, 2);
+        assert_eq!(replaced.removed_server_count, 2);
+
+        let config = load_claude_config(&config_path).unwrap();
+        assert!(config.get("mcpServers").is_none());
+
+        let backup = load_claude_config(&backup_path).unwrap();
+        let backup_servers = backup["mcpServers"].as_object().unwrap();
+        assert_eq!(backup_servers.len(), 3);
+        assert_eq!(backup_servers["alpha"]["command"].as_str(), Some("npx"));
+        assert_eq!(backup_servers["beta"]["command"].as_str(), Some("uvx"));
+        assert!(backup_servers.get("gamma").is_some());
+
+        fs::remove_file(config_path).unwrap();
+        fs::remove_file(backup_path).unwrap();
+    }
+
+    #[test]
+    fn restores_claude_servers_from_backup_after_removing_self_servers() {
+        let config_path = unique_test_path("claude-restore.json");
+        let backup_path = sibling_backup_path(&config_path, "msp-backup");
+        fs::write(
+            &config_path,
+            r#"{
+                "mcpServers": {
+                    "msp": {
+                        "type": "stdio",
+                        "command": "msp",
+                        "args": ["mcp", "--provider", "claude"]
+                    },
+                    "proxy": {
+                        "type": "stdio",
+                        "command": "msp",
+                        "args": ["mcp", "--provider", "codex"]
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            &backup_path,
+            r#"{
+                "mcpServers": {
+                    "alpha": {
+                        "type": "stdio",
+                        "command": "npx",
+                        "args": ["-y", "alpha-server"]
+                    },
+                    "beta": {
+                        "type": "stdio",
+                        "command": "uvx",
+                        "args": ["beta-server"]
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let restored = restore_claude_mcp_servers_from_path(&config_path).unwrap();
+
+        assert_eq!(restored.config_path, config_path);
+        assert_eq!(restored.backup_path, backup_path);
+        assert_eq!(restored.removed_self_server_count, 2);
+        assert_eq!(restored.restored_server_count, 2);
+
+        let config = load_claude_config(&config_path).unwrap();
+        let servers = config["mcpServers"].as_object().unwrap();
+        assert_eq!(servers.len(), 2);
+        assert!(servers.get("msp").is_none());
+        assert!(servers.get("proxy").is_none());
+        assert_eq!(servers["alpha"]["command"].as_str(), Some("npx"));
+        assert_eq!(servers["beta"]["command"].as_str(), Some("uvx"));
 
         fs::remove_file(config_path).unwrap();
         fs::remove_file(backup_path).unwrap();
@@ -2636,6 +3256,100 @@ mod tests {
     }
 
     #[test]
+    fn loads_claude_stdio_servers_for_import_from_path() {
+        let config_path = unique_test_path("claude-import.json");
+        fs::write(
+            &config_path,
+            r#"{
+                "mcpServers": {
+                    "beta": {
+                        "type": "stdio",
+                        "command": "uvx",
+                        "args": ["beta-server"]
+                    },
+                    "alpha": {
+                        "command": "npx",
+                        "args": ["-y", "@modelcontextprotocol/server-github"],
+                        "env": {
+                            "GITHUB_API_URL": "https://api.github.com"
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let plan = load_claude_servers_for_import_from_path(&config_path).unwrap();
+
+        assert_eq!(
+            plan.servers,
+            vec![
+                ImportableServer {
+                    name: "alpha".to_string(),
+                    command: vec![
+                        "npx".to_string(),
+                        "-y".to_string(),
+                        "@modelcontextprotocol/server-github".to_string(),
+                    ],
+                    enabled: true,
+                    env: BTreeMap::from([(
+                        "GITHUB_API_URL".to_string(),
+                        "https://api.github.com".to_string(),
+                    )]),
+                    env_vars: Vec::new(),
+                },
+                ImportableServer {
+                    name: "beta".to_string(),
+                    command: vec!["uvx".to_string(), "beta-server".to_string()],
+                    enabled: true,
+                    env: BTreeMap::new(),
+                    env_vars: Vec::new(),
+                },
+            ]
+        );
+
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
+    fn loads_claude_remote_headers_for_import() {
+        let config_path = unique_test_path("claude-import-remote.json");
+        fs::write(
+            &config_path,
+            r#"{
+                "mcpServers": {
+                    "demo": {
+                        "type": "http",
+                        "url": "https://example.com/mcp",
+                        "headers": {
+                            "Authorization": "Bearer ${DEMO_TOKEN}"
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let plan = load_claude_servers_for_import_from_path(&config_path).unwrap();
+
+        assert_eq!(plan.servers.len(), 1);
+        assert_eq!(
+            plan.servers[0].command,
+            vec![
+                "npx".to_string(),
+                "-y".to_string(),
+                "mcp-remote".to_string(),
+                "https://example.com/mcp".to_string(),
+                "--header".to_string(),
+                "Authorization: Bearer ${DEMO_TOKEN}".to_string(),
+            ]
+        );
+        assert_eq!(plan.servers[0].env_vars, vec!["DEMO_TOKEN".to_string()]);
+
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
     fn preserves_opencode_enabled_state_when_loading_import_plan() {
         let config_path = unique_test_path("opencode-import-enabled.json");
         fs::write(
@@ -2799,6 +3513,93 @@ mod tests {
             error.to_string(),
             format!(
                 "no `mcp` object found in OpenCode config {}",
+                config_path.display()
+            )
+        );
+
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
+    fn rejects_claude_import_when_server_uses_unsupported_fields() {
+        let config_path = unique_test_path("claude-import-unsupported.json");
+        fs::write(
+            &config_path,
+            r#"{
+                "mcpServers": {
+                    "demo": {
+                        "command": "npx",
+                        "args": ["-y", "demo-server"],
+                        "env_vars": ["DEMO_TOKEN"]
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let error = load_claude_servers_for_import_from_path(&config_path).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Claude Code MCP server `demo` uses unsupported settings `env_vars`; only `command`, optional `args`, optional `env`, and optional `type` can be imported"
+        );
+
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
+    fn skips_self_server_when_loading_claude_import_plan() {
+        let config_path = unique_test_path("claude-import-self.json");
+        fs::write(
+            &config_path,
+            r#"{
+                "mcpServers": {
+                    "proxy": {
+                        "type": "stdio",
+                        "command": "msp",
+                        "args": ["mcp"]
+                    },
+                    "github": {
+                        "command": "npx",
+                        "args": ["-y", "@modelcontextprotocol/server-github"]
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let plan = load_claude_servers_for_import_from_path(&config_path).unwrap();
+
+        assert_eq!(
+            plan.servers,
+            vec![ImportableServer {
+                name: "github".to_string(),
+                command: vec![
+                    "npx".to_string(),
+                    "-y".to_string(),
+                    "@modelcontextprotocol/server-github".to_string(),
+                ],
+                enabled: true,
+                env: BTreeMap::new(),
+                env_vars: Vec::new(),
+            }]
+        );
+        assert_eq!(plan.skipped_self_servers, vec!["proxy".to_string()]);
+
+        fs::remove_file(config_path).unwrap();
+    }
+
+    #[test]
+    fn rejects_claude_import_when_no_servers_are_configured() {
+        let config_path = unique_test_path("claude-import-empty.json");
+        fs::write(&config_path, "{}").unwrap();
+
+        let error = load_claude_servers_for_import_from_path(&config_path).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "no `mcpServers` object found in Claude Code config {}",
                 config_path.display()
             )
         );
@@ -3125,6 +3926,14 @@ mod tests {
     }
 
     #[test]
+    fn collects_claude_style_remote_header_env_placeholders() {
+        let (value, env_vars) = mcp_remote_header_value("Bearer ${DEMO_TOKEN:-fallback}");
+
+        assert_eq!(value, "Bearer ${DEMO_TOKEN:-fallback}");
+        assert_eq!(env_vars, vec!["DEMO_TOKEN".to_string()]);
+    }
+
+    #[test]
     fn detects_existing_server_name_after_normalization() {
         let config: Table = toml::from_str(
             r#"
@@ -3380,7 +4189,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "unsupported provider `anthropic`; supported providers are `codex` and `opencode`"
+            "unsupported provider `anthropic`; supported providers are `codex`, `opencode`, and `claude`"
         );
     }
 
@@ -3393,6 +4202,9 @@ mod tests {
                 assert_eq!(codex.model, DEFAULT_MODEL);
             }
             ModelProviderConfig::Opencode(_) => {
+                panic!("expected codex provider")
+            }
+            ModelProviderConfig::Claude(_) => {
                 panic!("expected codex provider")
             }
         }
@@ -3408,6 +4220,26 @@ mod tests {
             }
             ModelProviderConfig::Codex(_) => {
                 panic!("expected opencode provider")
+            }
+            ModelProviderConfig::Claude(_) => {
+                panic!("expected opencode provider")
+            }
+        }
+    }
+
+    #[test]
+    fn loads_claude_provider_runtime_with_default_model() {
+        let runtime = load_model_provider_config("claude").unwrap();
+
+        match runtime {
+            ModelProviderConfig::Claude(claude) => {
+                assert_eq!(claude.model, DEFAULT_CLAUDE_MODEL);
+            }
+            ModelProviderConfig::Codex(_) => {
+                panic!("expected claude provider")
+            }
+            ModelProviderConfig::Opencode(_) => {
+                panic!("expected claude provider")
             }
         }
     }

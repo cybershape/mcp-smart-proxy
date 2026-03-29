@@ -98,18 +98,21 @@ pub enum Command {
 pub enum ImportSource {
     Codex,
     Opencode,
+    Claude,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
 pub enum InstallTarget {
     Codex,
     Opencode,
+    Claude,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ProviderName {
     Codex,
     Opencode,
+    Claude,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -130,6 +133,7 @@ impl ProviderName {
         match self {
             Self::Codex => "codex",
             Self::Opencode => "opencode",
+            Self::Claude => "claude",
         }
     }
 }
@@ -213,6 +217,19 @@ mod tests {
     }
 
     #[test]
+    fn parses_import_claude_source() {
+        let cli = Cli::parse_from(["msp", "import", "claude"]);
+
+        match cli.command {
+            Some(Command::Import { provider, source }) => {
+                assert!(provider.is_none());
+                assert!(matches!(source, ImportSource::Claude));
+            }
+            other => panic!("expected import command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_install_codex_target() {
         let cli = Cli::parse_from(["msp", "install", "codex"]);
 
@@ -245,6 +262,31 @@ mod tests {
         match cli.command {
             Some(Command::Restore { target }) => {
                 assert!(matches!(target, InstallTarget::Opencode));
+            }
+            other => panic!("expected restore command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_install_claude_target() {
+        let cli = Cli::parse_from(["msp", "install", "claude"]);
+
+        match cli.command {
+            Some(Command::Install { replace, target }) => {
+                assert!(!replace);
+                assert!(matches!(target, InstallTarget::Claude));
+            }
+            other => panic!("expected install command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_restore_claude_target() {
+        let cli = Cli::parse_from(["msp", "restore", "claude"]);
+
+        match cli.command {
+            Some(Command::Restore { target }) => {
+                assert!(matches!(target, InstallTarget::Claude));
             }
             other => panic!("expected restore command, got {other:?}"),
         }

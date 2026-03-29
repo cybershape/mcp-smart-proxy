@@ -19,8 +19,8 @@ use crate::console::{
 };
 use crate::paths::{cache_file_path, unix_epoch_ms};
 use crate::types::{
-    CachedTools, CodexRuntimeConfig, ConfiguredServer, ModelProviderConfig, OpencodeRuntimeConfig,
-    ToolSnapshot, tool_snapshot,
+    CachedTools, ClaudeRuntimeConfig, CodexRuntimeConfig, ConfiguredServer, ModelProviderConfig,
+    OpencodeRuntimeConfig, ToolSnapshot, tool_snapshot,
 };
 
 pub struct ReloadResult {
@@ -248,6 +248,7 @@ async fn summarize_tools(
         ModelProviderConfig::Opencode(opencode) => {
             summarize_tools_with_opencode(opencode, &prompt).await
         }
+        ModelProviderConfig::Claude(claude) => summarize_tools_with_claude(claude, &prompt).await,
     }
 }
 
@@ -524,6 +525,108 @@ fn opencode_workdir_path() -> Result<PathBuf, Box<dyn Error>> {
     )))
 }
 
+async fn summarize_tools_with_claude(
+    claude: &ClaudeRuntimeConfig,
+    prompt: &str,
+) -> Result<String, Box<dyn Error>> {
+    let workdir = claude_workdir_path().map_err(|error| {
+        operation_error(
+            "reload.summarize_tools.claude.workdir_path",
+            "failed to compute a temporary workdir path for `claude -p`",
+            error,
+        )
+    })?;
+    fs::create_dir(&workdir).map_err(|error| {
+        operation_error(
+            "reload.summarize_tools.claude.create_workdir",
+            format!("failed to create temporary workdir {}", workdir.display()),
+            Box::new(error),
+        )
+    })?;
+
+    let command_args = vec![
+        "--bare".to_string(),
+        "--tools".to_string(),
+        String::new(),
+        "-p".to_string(),
+        "--output-format".to_string(),
+        "text".to_string(),
+        "--model".to_string(),
+        claude.model.clone(),
+        prompt.to_string(),
+    ];
+    let command_line = describe_command("claude", &command_args);
+
+    let output = tokio::process::Command::new("claude")
+        .current_dir(&workdir)
+        .env("NO_COLOR", "1")
+        .args(&command_args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|error| {
+            print_external_command_failure(
+                "reload.summarize_tools.claude",
+                "claude",
+                &command_line,
+                "wait-failed",
+            );
+            let _ = fs::remove_dir(&workdir);
+            operation_error(
+                "reload.summarize_tools.claude.wait",
+                format!("failed while waiting for external command `{command_line}`"),
+                Box::new(error),
+            )
+        })?;
+
+    if !output.status.success() {
+        print_external_command_failure(
+            "reload.summarize_tools.claude",
+            "claude",
+            &command_line,
+            &output.status.to_string(),
+        );
+        print_external_output_block(
+            "reload.summarize_tools.claude",
+            "claude",
+            &command_line,
+            "stdout",
+            &String::from_utf8_lossy(&output.stdout),
+        );
+        print_external_output_block(
+            "reload.summarize_tools.claude",
+            "claude",
+            &command_line,
+            "stderr",
+            &String::from_utf8_lossy(&output.stderr),
+        );
+        let _ = fs::remove_dir(&workdir);
+        return Err(message_error(
+            "reload.summarize_tools.claude.exit_status",
+            format!(
+                "`claude -p` exited unsuccessfully while summarizing tools; status={}",
+                output.status
+            ),
+        ));
+    }
+
+    let summary = non_empty_summary(
+        Some(String::from_utf8_lossy(&output.stdout).as_ref()),
+        "Claude Code returned an empty summary",
+    );
+    let _ = fs::remove_dir(&workdir);
+    summary
+}
+
+fn claude_workdir_path() -> Result<PathBuf, Box<dyn Error>> {
+    Ok(env::temp_dir().join(format!(
+        "mcp-smart-proxy-claude-workdir-{}-{}",
+        std::process::id(),
+        unix_epoch_ms()?
+    )))
+}
+
 fn non_empty_summary(value: Option<&str>, empty_message: &str) -> Result<String, Box<dyn Error>> {
     value
         .map(str::trim)
@@ -696,6 +799,19 @@ mod tests {
                 .and_then(|name| name.to_str())
                 .unwrap()
                 .starts_with("mcp-smart-proxy-opencode-workdir-")
+        );
+    }
+
+    #[test]
+    fn claude_workdir_path_is_created_in_temp_dir() {
+        let path = claude_workdir_path().unwrap();
+
+        assert!(path.starts_with(env::temp_dir()));
+        assert!(
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap()
+                .starts_with("mcp-smart-proxy-claude-workdir-")
         );
     }
 

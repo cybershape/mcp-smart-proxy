@@ -43,9 +43,15 @@ pub struct OpencodeRuntimeConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct ClaudeRuntimeConfig {
+    pub model: String,
+}
+
+#[derive(Debug, Clone)]
 pub enum ModelProviderConfig {
     Codex(CodexRuntimeConfig),
     Opencode(OpencodeRuntimeConfig),
+    Claude(ClaudeRuntimeConfig),
 }
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]

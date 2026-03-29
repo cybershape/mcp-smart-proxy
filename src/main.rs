@@ -16,10 +16,12 @@ use cli::{Cli, Command, ImportSource, InstallTarget, ProviderName};
 use config::{
     ImportPlan, InstallMcpServerResult, InstallMcpServerStatus, ReplaceMcpServersResult,
     RestoreMcpServersResult, ServerConfigSnapshot, UpdateServerConfig, add_server,
-    contains_server_name, import_server, install_codex_mcp_server, install_opencode_mcp_server,
-    list_servers, load_codex_servers_for_import, load_config_table, load_model_provider_config,
-    load_opencode_servers_for_import, load_server_config, remove_server, replace_codex_mcp_servers,
-    replace_opencode_mcp_servers, restore_codex_mcp_servers, restore_opencode_mcp_servers,
+    contains_server_name, import_server, install_claude_mcp_server, install_codex_mcp_server,
+    install_opencode_mcp_server, list_servers, load_claude_servers_for_import,
+    load_codex_servers_for_import, load_config_table, load_model_provider_config,
+    load_opencode_servers_for_import, load_server_config, remove_server,
+    replace_claude_mcp_servers, replace_codex_mcp_servers, replace_opencode_mcp_servers,
+    restore_claude_mcp_servers, restore_codex_mcp_servers, restore_opencode_mcp_servers,
     set_server_enabled, update_server_config,
 };
 use console::{describe_command, operation_error, print_app_error, print_app_event};
@@ -470,6 +472,117 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 );
             }
         }
+        Some(Command::Import {
+            provider,
+            source: ImportSource::Claude,
+        }) => {
+            let mut config = load_config_table(&config_path).map_err(|error| {
+                operation_error(
+                    "cli.import.claude.load_config",
+                    format!("failed to load config from {}", config_path.display()),
+                    error,
+                )
+            })?;
+            let provider =
+                resolve_import_provider(provider, ImportSource::Claude).map_err(|error| {
+                    operation_error(
+                        "cli.import.claude.load_provider",
+                        format!(
+                            "failed to load the provider configuration before importing into {}",
+                            config_path.display()
+                        ),
+                        error,
+                    )
+                })?;
+            let (claude_config_path, import_plan) =
+                load_claude_servers_for_import().map_err(|error| {
+                    operation_error(
+                        "cli.import.claude.load_source",
+                        "failed to load importable MCP servers from Claude Code config",
+                        error,
+                    )
+                })?;
+
+            let mut imported_servers = Vec::new();
+            let mut skipped_existing_servers = Vec::new();
+            for server in import_plan.servers {
+                if contains_server_name(&config, &server.name) {
+                    skipped_existing_servers.push(server.name);
+                    continue;
+                }
+
+                let server_name = import_server(&config_path, &server).map_err(|error| {
+                    operation_error(
+                        "cli.import.claude.add",
+                        format!(
+                            "failed to import MCP server `{}` from {} into {}",
+                            server.name,
+                            claude_config_path.display(),
+                            config_path.display()
+                        ),
+                        error,
+                    )
+                })?;
+                if server.enabled {
+                    let reload_result = reload_server_with_provider(
+                        &config_path,
+                        &server_name,
+                        &provider,
+                    )
+                    .await
+                    .map_err(|error| {
+                        operation_error(
+                            "cli.import.claude.reload",
+                            format!(
+                                "failed to reload imported MCP server `{server_name}` from {}",
+                                claude_config_path.display()
+                            ),
+                            error,
+                        )
+                    })?;
+                    imported_servers.push(format!(
+                        "Imported `{server_name}` [enabled] and cached tools at {}",
+                        reload_result.cache_path.display()
+                    ));
+                } else {
+                    imported_servers.push(format!(
+                        "Imported `{server_name}` [disabled] without reloading cached tools"
+                    ));
+                }
+                config = load_config_table(&config_path).map_err(|error| {
+                    operation_error(
+                        "cli.import.claude.refresh_config",
+                        format!("failed to refresh config from {}", config_path.display()),
+                        error,
+                    )
+                })?;
+            }
+
+            print_app_event(
+                "cli.import.claude",
+                format!(
+                    "Imported {} MCP server(s) from {} into {}",
+                    imported_servers.len(),
+                    claude_config_path.display(),
+                    config_path.display()
+                ),
+            );
+            for message in imported_servers {
+                print_app_event("cli.import.claude.server", message);
+            }
+            for name in skipped_existing_servers {
+                print_app_event(
+                    "cli.import.claude.skipped",
+                    format!("Skipped existing server `{name}`"),
+                );
+            }
+            for name in import_plan.skipped_self_servers {
+                print_app_event(
+                    "cli.import.claude.skipped",
+                    format!("Skipped self-referential server `{name}`"),
+                );
+            }
+        }
         Some(Command::Install {
             replace,
             target: InstallTarget::Codex,
@@ -522,6 +635,32 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 print_install_result("cli.install.opencode", "opencode", &installed);
             }
         }
+        Some(Command::Install {
+            replace,
+            target: InstallTarget::Claude,
+        }) => {
+            if replace {
+                install_with_replace(
+                    &config_path,
+                    ImportSource::Claude,
+                    load_claude_servers_for_import,
+                    replace_claude_mcp_servers,
+                    install_claude_mcp_server,
+                    "cli.install.claude",
+                    "claude",
+                )
+                .await?;
+            } else {
+                let installed = install_claude_mcp_server().map_err(|error| {
+                    operation_error(
+                        "cli.install.claude",
+                        "failed to install msp into Claude Code config",
+                        error,
+                    )
+                })?;
+                print_install_result("cli.install.claude", "claude", &installed);
+            }
+        }
         Some(Command::Restore {
             target: InstallTarget::Codex,
         }) => {
@@ -545,6 +684,18 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 )
             })?;
             print_restore_result("cli.restore.opencode", "opencode", &restored);
+        }
+        Some(Command::Restore {
+            target: InstallTarget::Claude,
+        }) => {
+            let restored = restore_claude_mcp_servers().map_err(|error| {
+                operation_error(
+                    "cli.restore.claude",
+                    "failed to restore MCP servers into Claude Code config",
+                    error,
+                )
+            })?;
+            print_restore_result("cli.restore.claude", "claude", &restored);
         }
         Some(Command::Remove { name }) => {
             let removed = remove_server(&config_path, &name).map_err(|error| {
@@ -868,7 +1019,8 @@ fn resolve_default_command_provider(
     provider_override: Option<ProviderName>,
 ) -> Result<ModelProviderConfig, Box<dyn Error>> {
     let provider = provider_override.ok_or_else(|| {
-        "missing required `--provider`; supported providers are `codex` and `opencode`".to_string()
+        "missing required `--provider`; supported providers are `codex`, `opencode`, and `claude`"
+            .to_string()
     })?;
     load_model_provider_config(provider.as_str())
 }
@@ -893,12 +1045,13 @@ fn import_source_provider_name(source: ImportSource) -> &'static str {
     match source {
         ImportSource::Codex => "codex",
         ImportSource::Opencode => "opencode",
+        ImportSource::Claude => "claude",
     }
 }
 
 #[cfg(test)]
 fn missing_provider_error() -> &'static str {
-    "missing required `--provider`; supported providers are `codex` and `opencode`"
+    "missing required `--provider`; supported providers are `codex`, `opencode`, and `claude`"
 }
 
 fn print_install_result(stage: &str, provider: &str, installed: &InstallMcpServerResult) {
@@ -1043,6 +1196,13 @@ mod tests {
     }
 
     #[test]
+    fn resolves_import_provider_from_claude_source_when_override_is_missing() {
+        let provider = resolve_import_provider(None, ImportSource::Claude).unwrap();
+
+        assert!(matches!(provider, ModelProviderConfig::Claude(_)));
+    }
+
+    #[test]
     fn rejects_default_command_provider_when_override_is_missing() {
         let error = resolve_default_command_provider(None).unwrap_err();
 
@@ -1054,6 +1214,13 @@ mod tests {
         let provider = resolve_install_import_provider(ImportSource::Codex).unwrap();
 
         assert!(matches!(provider, ModelProviderConfig::Codex(_)));
+    }
+
+    #[test]
+    fn resolves_install_import_provider_from_claude_source() {
+        let provider = resolve_install_import_provider(ImportSource::Claude).unwrap();
+
+        assert!(matches!(provider, ModelProviderConfig::Claude(_)));
     }
 
     #[test]

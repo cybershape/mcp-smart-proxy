@@ -8,7 +8,7 @@ Running `msp` without any arguments prints the top-level command help.
 It does simple things:
 
 1. It connects to a configured MCP server and caches its tool metadata.
-2. It generates a one-sentence summary of the toolset using a configured AI provider, which can be the Codex CLI or the OpenCode CLI.
+2. It generates a one-sentence summary of the toolset using a configured AI provider, which can be the Codex CLI, the OpenCode CLI, or Claude Code.
 3. It starts a stdio MCP server that exposes the cached toolsets through a small proxy interface.
 
 ## How it works
@@ -26,6 +26,7 @@ Your Agents see only these three tools. When they want to use a tool from a MCP 
 - Homebrew, or `curl`/`wget` plus `tar`, for installation
 - The `codex` CLI for summary using the `codex` provider
 - The `opencode` CLI for summary using the `opencode` provider
+- The `claude` CLI for summary using the `claude` provider
 - `npx` for running `mcp-remote` when adding http URLs as MCP servers
 - Any downstream MCP servers must use stdio transport. If it's http transport, msp will add `npx -y mcp-remote` in front of the URL to convert it to stdio
 
@@ -175,10 +176,11 @@ Notes:
 - Each server is enabled by default. Set `enabled = false` or run `msp disable <name>` to keep it configured but exclude it from `msp mcp` activation and bulk reload.
 - `env` stores static environment variables for the downstream MCP server, while `env_vars` lists variable names that `msp` forwards from its own process environment when it starts that server.
 - `msp config <name>` shows one managed server's current `transport`, `enabled`, `command`, `args`, `env`, and `env_vars` values, and can also update them in place.
-- `add`, `reload`, and `mcp` require `--provider <codex|opencode>`.
-- `import` accepts `--provider <codex|opencode>` and falls back to the current import source provider when omitted.
+- `add`, `reload`, and `mcp` require `--provider <codex|opencode|claude>`.
+- `import` accepts `--provider <codex|opencode|claude>` and falls back to the current import source provider when omitted.
 - `codex` uses the built-in default model `gpt-5.2`.
 - `opencode` uses the built-in default model `openai/gpt-5.2`.
+- `claude` uses the built-in default model `sonnet`.
 
 ## Commands
 
@@ -302,7 +304,32 @@ If an OpenCode server launches this proxy with `msp mcp`, that entry is also ski
 
 Only OpenCode MCP servers defined as local servers with a string-array `command`, optional `type = "local"`, optional boolean `enabled`, and optional string-to-string `environment`, or as remote servers with `type = "remote"`, a string `url`, optional boolean `enabled`, and optional string-to-string `headers`, are importable. OpenCode already supports environment-variable substitution inside `headers`, and `msp import opencode` preserves those remote header placeholders by converting them for `mcp-remote`. Other settings are rejected instead of being imported partially.
 
-### Install this proxy into Codex or OpenCode
+### Import servers from Claude Code
+
+```bash
+msp import claude
+```
+
+This command:
+
+1. reads Claude Code MCP servers from `~/.claude.json`
+2. imports servers from the user-scope `mcpServers` object into the `msp` config
+3. imports local `stdio` servers with `command`, optional `args`, and optional `env`
+4. converts remote `http` or `sse` servers with `url` plus optional `headers` into `npx -y mcp-remote ... --header ...`
+5. preserves Claude-style header placeholders like `${API_KEY}` for `mcp-remote` and records the referenced env var names in `env_vars`
+6. reloads imported servers with the summary provider resolved by priority `--provider`, then the current import source provider (`claude`)
+
+Without `--provider`, `import claude` uses the `claude` provider with the built-in default model `sonnet`.
+For example, `msp import --provider codex claude` imports Claude Code servers but summarizes them with Codex.
+
+If a Claude Code server name already exists in the `msp` config after normalization, that server is skipped.
+If a Claude Code server launches this proxy with `msp mcp`, that entry is also skipped during import.
+
+Only the Claude Code user-scope `mcpServers` object in `~/.claude.json` is imported in this release. Project-scoped `.mcp.json`, local per-project entries inside `~/.claude.json`, and Claude-specific advanced settings such as OAuth metadata or `headersHelper` are not imported.
+
+Only Claude Code MCP servers defined as `stdio` servers with `command`, optional `args`, optional `env`, and optional `type`, or as `http` / `sse` servers with `url`, optional `headers`, and optional `type`, are importable. Other settings are rejected instead of being imported partially.
+
+### Install this proxy into Codex, OpenCode, or Claude Code
 
 Install into Codex:
 
@@ -316,39 +343,48 @@ Install into OpenCode:
 msp install opencode
 ```
 
+Install into Claude Code:
+
+```bash
+msp install claude
+```
+
 Replace existing target MCP servers after importing them into `msp`:
 
 ```bash
 msp install codex --replace
 msp install opencode --replace
+msp install claude --replace
 ```
 
 This command:
 
-1. reads the target config file for Codex or OpenCode
+1. reads the target config file for Codex, OpenCode, or Claude Code
 2. checks whether that config already contains an MCP server that runs `msp mcp`
-3. if that server already uses `msp mcp --provider codex` or `msp mcp --provider opencode`, reports it as already installed
+3. if that server already uses `msp mcp --provider codex`, `msp mcp --provider opencode`, or `msp mcp --provider claude`, reports it as already installed
 4. otherwise updates the existing `msp mcp` entry to the requested provider, or creates a new entry if none exists
 5. prefers the server name `msp`; if that name is already used by another server, creates `msp1`, `msp2`, and so on
 
 `install codex` writes into `$CODEX_HOME/config.toml` or `~/.codex/config.toml`.
 `install opencode` writes into `~/.config/opencode/opencode.json`.
+`install claude` writes into the user-scope `mcpServers` object in `~/.claude.json`.
 
 With `--replace`, `install` performs four extra steps before the final install:
 
 1. imports the target tool's MCP servers into `msp`, preserving optional `enabled` flags, and uses that import source's built-in provider
 2. merges every MCP server currently present in the target config into a backup file
 3. removes all MCP servers from the target config
-4. installs `msp mcp --provider codex` or `msp mcp --provider opencode`
+4. installs `msp mcp --provider codex`, `msp mcp --provider opencode`, or `msp mcp --provider claude`
 
 The backup files are:
 
 - Codex: `$CODEX_HOME/config.msp-backup.toml` or `~/.codex/config.msp-backup.toml`
 - OpenCode: `~/.config/opencode/opencode.msp-backup.json`
+- Claude Code: `~/.claude.msp-backup.json`
 
 If a backup file already exists, `--replace` updates it in place by server name so the backup stays deduplicated.
 
-### Restore backed up MCP servers into Codex or OpenCode
+### Restore backed up MCP servers into Codex, OpenCode, or Claude Code
 
 Restore into Codex:
 
@@ -362,6 +398,12 @@ Restore into OpenCode:
 msp restore opencode
 ```
 
+Restore into Claude Code:
+
+```bash
+msp restore claude
+```
+
 This command:
 
 1. reads the target backup file created by `msp install --replace`
@@ -370,6 +412,7 @@ This command:
 
 `restore codex` reads from `$CODEX_HOME/config.msp-backup.toml` or `~/.codex/config.msp-backup.toml`.
 `restore opencode` reads from `~/.config/opencode/opencode.msp-backup.json`.
+`restore claude` reads from `~/.claude.msp-backup.json`.
 
 If the backup file is missing, `restore` fails instead of restoring partially.
 
@@ -434,6 +477,7 @@ The cache is stored at:
 - `reload` fails if `--provider` is omitted.
 - For `codex`, install the `codex` CLI; `reload` runs `codex exec`.
 - For `opencode`, install the `opencode` CLI; `reload` runs `opencode run`.
+- For `claude`, install the `claude` CLI; `reload` runs `claude --bare --tools \"\" -p`.
 
 ### Start the proxy MCP server
 
@@ -480,6 +524,12 @@ Importing existing OpenCode MCP servers:
 msp import opencode
 ```
 
+Importing existing Claude Code MCP servers:
+
+```bash
+msp import claude
+```
+
 Install into Codex:
 
 ```bash
@@ -492,18 +542,26 @@ Install into OpenCode:
 msp install opencode
 ```
 
+Install into Claude Code:
+
+```bash
+msp install claude
+```
+
 Replace existing target MCP servers during install:
 
 ```bash
 msp install codex --replace
 msp install opencode --replace
+msp install claude --replace
 ```
 
-Restore backed up MCP servers into Codex or OpenCode:
+Restore backed up MCP servers into Codex, OpenCode, or Claude Code:
 
 ```bash
 msp restore codex
 msp restore opencode
+msp restore claude
 ```
 
 ## Proxy Tool Contract
