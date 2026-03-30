@@ -107,7 +107,7 @@ async fn reload_server_with_resolved_provider(
         });
     }
 
-    let summary = summarize_tools(&provider, &resolved_name, &tools)
+    let summary = summarize_tools(provider, &resolved_name, &tools)
         .await
         .map_err(|error| {
             operation_error(

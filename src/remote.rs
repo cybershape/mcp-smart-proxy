@@ -1,8 +1,8 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
-use std::fs::{self, OpenOptions};
-use std::path::{Path, PathBuf};
+use std::fs;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -40,6 +40,7 @@ use tokio::{
 };
 
 use crate::console::{message_error, print_app_event, print_app_warning};
+use crate::fs_util::{acquire_sibling_lock, write_file_atomically};
 use crate::paths::oauth_credentials_path;
 use crate::types::{ConfiguredServer, ConfiguredTransport};
 
@@ -81,7 +82,7 @@ pub async fn login_remote_server(
 
 pub fn logout_remote_server(server_name: &str) -> Result<bool, Box<dyn Error>> {
     let path = oauth_credentials_path(server_name)?;
-    let _guard = acquire_file_lock(&path).map_err(Box::<dyn Error>::from)?;
+    let _guard = acquire_sibling_lock(&path).map_err(Box::<dyn Error>::from)?;
     if !path.exists() {
         return Ok(false);
     }
@@ -237,10 +238,8 @@ impl OAuthAwareHttpClient {
         let has_authorization = custom_headers
             .keys()
             .any(|name| name.as_str().eq_ignore_ascii_case(AUTHORIZATION.as_str()));
-        if !has_authorization {
-            if let Some(auth_header) = auth_token {
-                request = request.bearer_auth(auth_header);
-            }
+        if !has_authorization && let Some(auth_header) = auth_token {
+            request = request.bearer_auth(auth_header);
         }
         request
     }
@@ -385,10 +384,9 @@ impl OAuthAwareHttpClient {
             if content_type
                 .as_deref()
                 .is_some_and(|ct| ct.as_bytes().starts_with(JSON_MIME_TYPE.as_bytes()))
+                && let Some(message) = parse_json_rpc_error(&body)
             {
-                if let Some(message) = parse_json_rpc_error(&body) {
-                    return Ok(StreamableHttpPostResponse::Json(message, session_id));
-                }
+                return Ok(StreamableHttpPostResponse::Json(message, session_id));
             }
             return Err(StreamableHttpError::UnexpectedServerResponse(Cow::Owned(
                 format!("HTTP {status}: {body}"),
@@ -822,7 +820,8 @@ impl FileCredentialStore {
 #[async_trait]
 impl CredentialStore for FileCredentialStore {
     async fn load(&self) -> Result<Option<StoredCredentials>, AuthError> {
-        let _guard = acquire_file_lock(&self.path)?;
+        let _guard = acquire_sibling_lock(&self.path)
+            .map_err(|error| AuthError::InternalError(error.to_string()))?;
         if !self.path.exists() {
             return Ok(None);
         }
@@ -834,51 +833,23 @@ impl CredentialStore for FileCredentialStore {
     }
 
     async fn save(&self, credentials: StoredCredentials) -> Result<(), AuthError> {
-        let _guard = acquire_file_lock(&self.path)?;
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|error| AuthError::InternalError(error.to_string()))?;
-        }
+        let _guard = acquire_sibling_lock(&self.path)
+            .map_err(|error| AuthError::InternalError(error.to_string()))?;
         let contents = serde_json::to_string_pretty(&credentials)
             .map_err(|error| AuthError::InternalError(error.to_string()))?;
-        fs::write(&self.path, contents).map_err(|error| AuthError::InternalError(error.to_string()))
+        write_file_atomically(&self.path, contents.as_bytes())
+            .map_err(|error| AuthError::InternalError(error.to_string()))
     }
 
     async fn clear(&self) -> Result<(), AuthError> {
-        let _guard = acquire_file_lock(&self.path)?;
+        let _guard = acquire_sibling_lock(&self.path)
+            .map_err(|error| AuthError::InternalError(error.to_string()))?;
         if self.path.exists() {
             fs::remove_file(&self.path)
                 .map_err(|error| AuthError::InternalError(error.to_string()))?;
         }
         Ok(())
     }
-}
-
-struct FileLockGuard {
-    _file: fs::File,
-}
-
-fn acquire_file_lock(path: &Path) -> Result<FileLockGuard, AuthError> {
-    let lock_path = sibling_lock_path(path);
-    if let Some(parent) = lock_path.parent() {
-        fs::create_dir_all(parent).map_err(|error| AuthError::InternalError(error.to_string()))?;
-    }
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(lock_path)
-        .map_err(|error| AuthError::InternalError(error.to_string()))?;
-    file.lock()
-        .map_err(|error| AuthError::InternalError(error.to_string()))?;
-    Ok(FileLockGuard { _file: file })
-}
-
-fn sibling_lock_path(path: &Path) -> PathBuf {
-    let mut file_name = path.file_name().map(ToOwned::to_owned).unwrap_or_default();
-    file_name.push(".lock");
-    path.with_file_name(file_name)
 }
 
 #[cfg(test)]

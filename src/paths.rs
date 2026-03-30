@@ -7,7 +7,7 @@ pub fn expand_tilde(path: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let path_str = path.to_string_lossy();
 
     if path_str == "~" {
-        return Ok(home_dir()?);
+        return home_dir();
     }
 
     if let Some(stripped) = path_str.strip_prefix("~/") {

@@ -339,6 +339,8 @@ This command:
 5. reloads only imported servers that are enabled
 6. resolves the summary provider with priority `--provider`, then the current import source provider (`codex`)
 
+If any imported server fails during the refresh step, `msp` rolls back every server added by that import run so the local config does not stay partially updated.
+
 Without `--provider`, `import codex` uses the `codex` provider with the built-in default model `gpt-5.2`.
 For example, `msp import --provider opencode codex` imports Codex servers but summarizes them with OpenCode.
 
@@ -364,6 +366,8 @@ This command:
 5. reloads only imported servers that are enabled
 6. resolves the summary provider with priority `--provider`, then the current import source provider (`opencode`)
 
+If any imported server fails during the refresh step, `msp` rolls back every server added by that import run so the local config does not stay partially updated.
+
 Without `--provider`, `import opencode` uses the `opencode` provider with the built-in default model `openai/gpt-5.2`.
 For example, `msp import --provider codex opencode` imports OpenCode servers but summarizes them with Codex.
 
@@ -386,6 +390,8 @@ This command:
 4. stores remote `http` or `sse` servers with `url` plus optional `headers` as native `msp` config
 5. preserves Claude-style header placeholders like `${API_KEY}` in `msp`'s native `headers` table and records the referenced env var names in `env_vars`
 6. reloads imported servers with the summary provider resolved by priority `--provider`, then the current import source provider (`claude`)
+
+If any imported server fails during the refresh step, `msp` rolls back every server added by that import run so the local config does not stay partially updated.
 
 Without `--provider`, `import claude` uses the `claude` provider with the built-in default model `sonnet`.
 For example, `msp import --provider codex claude` imports Claude Code servers but summarizes them with Codex.
@@ -443,6 +449,8 @@ With `--replace`, `install` performs four extra steps before the final install:
 2. merges every MCP server currently present in the target config into a backup file
 3. removes all MCP servers from the target config
 4. installs `msp mcp --provider codex`, `msp mcp --provider opencode`, or `msp mcp --provider claude`
+
+If the pre-install import step fails, `msp` rolls back every server added during that batch before it touches the target tool's MCP config.
 
 The backup files are:
 

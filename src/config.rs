@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use toml::{Table, Value};
 
+use crate::fs_util::write_file_atomically;
 use crate::paths::{
     cache_file_path, expand_tilde, format_path_for_display, sanitize_name, sibling_backup_path,
 };
@@ -441,12 +442,8 @@ pub fn load_config_table(path: &Path) -> Result<Table, Box<dyn Error>> {
 }
 
 pub fn save_config_table(path: &Path, config: &Table) -> Result<(), Box<dyn Error>> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
     let contents = toml::to_string_pretty(config)?;
-    fs::write(path, contents)?;
+    write_file_atomically(path, contents.as_bytes())?;
     Ok(())
 }
 
@@ -475,7 +472,7 @@ pub fn configured_server(
         .ok_or_else(|| format!("server `{resolved_name}` must be a table"))?;
 
     let transport = resolved_server_transport(server, &resolved_name)?;
-    let (configured_transport, command, args, url, headers) = match transport {
+    let configured_transport = match transport {
         "stdio" => {
             let command = server
                 .get("command")
@@ -499,31 +496,16 @@ pub fn configured_server(
                 .transpose()?
                 .unwrap_or_default();
 
-            (
-                ConfiguredTransport::Stdio {
-                    command: command.clone(),
-                    args: args.clone(),
-                },
-                command,
-                args,
-                None,
-                BTreeMap::new(),
-            )
+            ConfiguredTransport::Stdio { command, args }
         }
         "remote" => {
             let url = parse_remote_server_url(server, &resolved_name)?;
             let headers =
                 parse_toml_string_table(server.get("headers"), "headers", "server", &resolved_name)?;
-            (
-                ConfiguredTransport::Remote {
-                    url: url.to_string(),
-                    headers: headers.clone(),
-                },
-                String::new(),
-                Vec::new(),
-                Some(url.to_string()),
+            ConfiguredTransport::Remote {
+                url: url.to_string(),
                 headers,
-            )
+            }
         }
         other => {
             return Err(format!(
@@ -541,10 +523,6 @@ pub fn configured_server(
         resolved_name,
         ConfiguredServer {
             transport: configured_transport,
-            command,
-            args,
-            url,
-            headers,
             env,
             env_vars,
         },
@@ -1759,14 +1737,13 @@ fn codex_imported_server_command(
                     "Authorization".to_string(),
                     format!("Bearer {{env:{bearer_token_env_var}}}"),
                 );
-            } else if matches!(server.get("bearer_token_env_var"), Some(_)) {
+            } else if server.get("bearer_token_env_var").is_some() {
                 return Err(format!(
                     "Codex MCP server `{name}` has a non-string `bearer_token_env_var` field"
                 )
                 .into());
             }
-            let (_, header_env_vars) = mcp_remote_command(url, &headers);
-            merge_env_vars(&mut env_vars, header_env_vars);
+            merge_env_vars(&mut env_vars, collect_remote_header_env_vars(&headers));
             Ok(ImportedServerDefinition {
                 command: Vec::new(),
                 url: Some(url.to_string()),
@@ -1860,7 +1837,7 @@ fn opencode_imported_server_command(
                 "OpenCode MCP server",
                 name,
             )?;
-            let (_, env_vars) = mcp_remote_command(url, &headers);
+            let env_vars = collect_remote_header_env_vars(&headers);
             Ok(ImportedServerDefinition {
                 command: Vec::new(),
                 url: Some(url.to_string()),
@@ -1926,7 +1903,7 @@ fn claude_imported_server_command(
                 "Claude Code MCP server",
                 name,
             )?;
-            let (_, env_vars) = mcp_remote_command(url, &headers);
+            let env_vars = collect_remote_header_env_vars(&headers);
             Ok(ImportedServerDefinition {
                 command: Vec::new(),
                 url: Some(url.to_string()),
@@ -1942,26 +1919,17 @@ fn claude_imported_server_command(
     }
 }
 
-fn mcp_remote_command(url: &str, headers: &BTreeMap<String, String>) -> (Vec<String>, Vec<String>) {
-    let mut command = vec![
-        "npx".to_string(),
-        "-y".to_string(),
-        "mcp-remote".to_string(),
-        url.to_string(),
-    ];
+fn collect_remote_header_env_vars(headers: &BTreeMap<String, String>) -> Vec<String> {
     let mut env_vars = Vec::new();
 
-    for (name, value) in headers {
-        let (header_value, header_env_vars) = mcp_remote_header_value(value);
-        command.push("--header".to_string());
-        command.push(format!("{name}: {header_value}"));
-        merge_env_vars(&mut env_vars, header_env_vars);
+    for value in headers.values() {
+        merge_env_vars(&mut env_vars, collect_remote_header_value_env_vars(value));
     }
 
-    (command, env_vars)
+    env_vars
 }
 
-fn mcp_remote_header_value(value: &str) -> (String, Vec<String>) {
+fn collect_remote_header_value_env_vars(value: &str) -> Vec<String> {
     let mut rendered = String::new();
     let mut env_vars = Vec::new();
     let mut remaining = value;
@@ -1987,7 +1955,7 @@ fn mcp_remote_header_value(value: &str) -> (String, Vec<String>) {
 
     rendered.push_str(remaining);
     collect_dollar_brace_env_vars(&rendered, &mut env_vars);
-    (rendered, env_vars)
+    env_vars
 }
 
 fn collect_dollar_brace_env_vars(value: &str, env_vars: &mut Vec<String>) {
@@ -2242,12 +2210,8 @@ fn load_opencode_config(path: &Path) -> Result<JsonValue, Box<dyn Error>> {
 }
 
 fn save_opencode_config(path: &Path, config: &JsonValue) -> Result<(), Box<dyn Error>> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
     let contents = serde_json::to_string_pretty(config)?;
-    fs::write(path, contents)?;
+    write_file_atomically(path, contents.as_bytes())?;
     Ok(())
 }
 
@@ -2262,12 +2226,8 @@ fn load_claude_config(path: &Path) -> Result<JsonValue, Box<dyn Error>> {
 }
 
 fn save_claude_config(path: &Path, config: &JsonValue) -> Result<(), Box<dyn Error>> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
     let contents = serde_json::to_string_pretty(config)?;
-    fs::write(path, contents)?;
+    write_file_atomically(path, contents.as_bytes())?;
     Ok(())
 }
 
@@ -4381,18 +4341,16 @@ mod tests {
     }
 
     #[test]
-    fn rewrites_remote_header_env_placeholders_for_mcp_remote() {
-        let (value, env_vars) = mcp_remote_header_value("Bearer {env:DEMO_TOKEN}");
+    fn collects_codex_style_remote_header_env_placeholders() {
+        let env_vars = collect_remote_header_value_env_vars("Bearer {env:DEMO_TOKEN}");
 
-        assert_eq!(value, "Bearer ${DEMO_TOKEN}");
         assert_eq!(env_vars, vec!["DEMO_TOKEN".to_string()]);
     }
 
     #[test]
     fn collects_claude_style_remote_header_env_placeholders() {
-        let (value, env_vars) = mcp_remote_header_value("Bearer ${DEMO_TOKEN:-fallback}");
+        let env_vars = collect_remote_header_value_env_vars("Bearer ${DEMO_TOKEN:-fallback}");
 
-        assert_eq!(value, "Bearer ${DEMO_TOKEN:-fallback}");
         assert_eq!(env_vars, vec!["DEMO_TOKEN".to_string()]);
     }
 
@@ -4723,10 +4681,6 @@ mod tests {
                     command: "uvx".to_string(),
                     args: vec!["mcp-server".to_string()],
                 },
-                command: "uvx".to_string(),
-                args: vec!["mcp-server".to_string()],
-                url: None,
-                headers: BTreeMap::new(),
                 env: BTreeMap::new(),
                 env_vars: Vec::new(),
             }
@@ -4761,13 +4715,6 @@ mod tests {
                         "Bearer ${DEMO_TOKEN}".to_string(),
                     )]),
                 },
-                command: String::new(),
-                args: Vec::new(),
-                url: Some("https://example.com/mcp".to_string()),
-                headers: BTreeMap::from([(
-                    "Authorization".to_string(),
-                    "Bearer ${DEMO_TOKEN}".to_string(),
-                )]),
                 env: BTreeMap::new(),
                 env_vars: Vec::new(),
             }
@@ -4788,8 +4735,10 @@ mod tests {
 
         let (_, server) = configured_server(&config, "demo").unwrap();
 
-        assert_eq!(server.command, "uvx");
-        assert_eq!(server.args, vec!["demo-server".to_string()]);
+        assert_eq!(
+            server.stdio_transport(),
+            Some(("uvx", ["demo-server".to_string()].as_slice()))
+        );
         assert!(matches!(
             server.transport,
             ConfiguredTransport::Stdio {
@@ -4821,8 +4770,11 @@ mod tests {
                 headers: BTreeMap::new(),
             }
         );
-        assert_eq!(server.url.as_deref(), Some("https://example.com/mcp"));
-        assert!(server.command.is_empty());
+        assert_eq!(
+            server.remote_transport(),
+            Some(("https://example.com/mcp", &BTreeMap::new()))
+        );
+        assert!(server.stdio_transport().is_none());
     }
 
     #[test]

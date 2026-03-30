@@ -21,15 +21,27 @@ pub enum ConfiguredTransport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfiguredServer {
     pub transport: ConfiguredTransport,
-    pub command: String,
-    pub args: Vec<String>,
-    pub url: Option<String>,
-    pub headers: BTreeMap<String, String>,
     pub env: BTreeMap<String, String>,
     pub env_vars: Vec<String>,
 }
 
 impl ConfiguredServer {
+    #[cfg(test)]
+    pub fn stdio_transport(&self) -> Option<(&str, &[String])> {
+        match &self.transport {
+            ConfiguredTransport::Stdio { command, args } => Some((command, args)),
+            ConfiguredTransport::Remote { .. } => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn remote_transport(&self) -> Option<(&str, &BTreeMap<String, String>)> {
+        match &self.transport {
+            ConfiguredTransport::Remote { url, headers } => Some((url, headers)),
+            ConfiguredTransport::Stdio { .. } => None,
+        }
+    }
+
     pub fn resolved_env(&self) -> Vec<(String, OsString)> {
         let mut resolved = BTreeMap::new();
 
@@ -58,10 +70,6 @@ impl Default for ConfiguredServer {
                 command: String::new(),
                 args: Vec::new(),
             },
-            command: String::new(),
-            args: Vec::new(),
-            url: None,
-            headers: BTreeMap::new(),
             env: BTreeMap::new(),
             env_vars: Vec::new(),
         }
@@ -158,10 +166,6 @@ mod tests {
                 command: "demo".to_string(),
                 args: Vec::new(),
             },
-            command: "demo".to_string(),
-            args: Vec::new(),
-            url: None,
-            headers: BTreeMap::new(),
             env: BTreeMap::from([("MSP_TEST_OVERRIDDEN".to_string(), "from-config".to_string())]),
             env_vars: vec![
                 "MSP_TEST_FORWARDED".to_string(),
@@ -201,10 +205,6 @@ mod tests {
                 args: _
             }
         ));
-        assert!(server.command.is_empty());
-        assert!(server.args.is_empty());
-        assert!(server.url.is_none());
-        assert!(server.headers.is_empty());
         assert!(server.env.is_empty());
         assert!(server.env_vars.is_empty());
     }

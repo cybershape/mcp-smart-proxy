@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::error::Error;
 use std::ffi::OsString;
-use std::fs::{self, File, OpenOptions};
+use std::fs;
 use std::io::{Cursor, Read};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -17,9 +17,10 @@ use serde::{Deserialize, Serialize};
 use tar::Archive;
 
 use crate::console::print_app_warning;
+use crate::fs_util::{acquire_sibling_lock, write_file_atomically};
 use crate::paths::{
-    home_dir, installed_version_record_path, sibling_lock_path, unix_epoch_ms,
-    version_check_record_path, version_check_record_path_from_home,
+    home_dir, installed_version_record_path, unix_epoch_ms, version_check_record_path,
+    version_check_record_path_from_home,
 };
 
 const BINARY_NAME: &str = "msp";
@@ -43,10 +44,6 @@ struct InstalledVersionRecord {
     updated_at: u128,
     latest_version: String,
     release_url: String,
-}
-
-struct PathLockGuard {
-    _file: File,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,7 +172,7 @@ async fn try_auto_update(
     executable_path: &Path,
     latest_version: &str,
 ) -> Result<bool, Box<dyn Error>> {
-    let _update_lock = acquire_path_lock(executable_path)?;
+    let _update_lock = acquire_sibling_lock(executable_path)?;
 
     if let Some(record) = load_installed_version_record(executable_path)? {
         match compare_versions(&record.latest_version, latest_version) {
@@ -280,16 +277,7 @@ fn synchronize_current_installed_version_record() -> Result<(), Box<dyn Error>> 
         None => true,
     };
 
-    if should_write {
-        write_installed_version_record(
-            &executable_path,
-            &InstalledVersionRecord {
-                updated_at: unix_epoch_ms()?,
-                latest_version: CURRENT_VERSION.to_string(),
-                release_url: RELEASES_PAGE_URL.to_string(),
-            },
-        )?;
-    } else if !path.exists() {
+    if should_write || !path.exists() {
         write_installed_version_record(
             &executable_path,
             &InstalledVersionRecord {
@@ -464,55 +452,20 @@ fn delete_version_update_record() -> Result<(), Box<dyn Error>> {
 }
 
 fn write_json_record<T: Serialize>(path: PathBuf, record: &T) -> Result<(), Box<dyn Error>> {
-    let _guard = acquire_path_lock(&path)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
+    let _guard = acquire_sibling_lock(&path)?;
     let bytes = serde_json::to_vec_pretty(record)?;
     write_file_atomically(&path, &bytes)?;
     Ok(())
 }
 
 fn delete_file_with_lock(path: &Path) -> Result<(), Box<dyn Error>> {
-    let _guard = acquire_path_lock(path)?;
+    let _guard = acquire_sibling_lock(path)?;
     if !path.exists() {
         return Ok(());
     }
 
     fs::remove_file(path)?;
     Ok(())
-}
-
-fn write_file_atomically(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let temp_path = temporary_path_for(path)?;
-    fs::write(&temp_path, bytes)?;
-    if let Err(error) = fs::rename(&temp_path, path) {
-        let _ = fs::remove_file(&temp_path);
-        return Err(Box::new(error));
-    }
-
-    Ok(())
-}
-
-fn acquire_path_lock(path: &Path) -> Result<PathLockGuard, Box<dyn Error>> {
-    let lock_path = sibling_lock_path(path);
-    if let Some(parent) = lock_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(lock_path)?;
-    file.lock()?;
-    Ok(PathLockGuard { _file: file })
 }
 
 fn parse_release_version_from_url(url: &Url) -> Option<String> {

@@ -111,7 +111,7 @@ pub async fn serve_cached_toolsets(
     let service = SmartProxyMcpServer::new(toolsets)
         .serve(stdio())
         .await
-        .map_err(|error| map_proxy_serve_error(error))?;
+        .map_err(map_proxy_serve_error)?;
     service.waiting().await.map_err(|error| {
         operation_error(
             "mcp.wait",
@@ -559,138 +559,133 @@ impl ServerHandler for SmartProxyMcpServer {
         }
     }
 
-    fn call_tool(
+    async fn call_tool(
         &self,
         request: CallToolRequestParams,
         _context: RequestContext<rmcp::RoleServer>,
-    ) -> impl Future<Output = Result<CallToolResult, McpError>> + Send + '_ {
-        async move {
-            let arguments = request
-                .arguments
-                .ok_or_else(|| McpError::invalid_params("tool arguments are required", None))?;
+    ) -> Result<CallToolResult, McpError> {
+        let arguments = request
+            .arguments
+            .ok_or_else(|| McpError::invalid_params("tool arguments are required", None))?;
 
-            match request.name.as_ref() {
-                ACTIVATE_EXTERNAL_MCP_NAME => {
-                    let params: ActivateExternalMcpRequest =
-                        serde_json::from_value(JsonValue::Object(arguments)).map_err(|error| {
-                            McpError::invalid_params(
-                                format!("invalid activate_external_mcp arguments: {error}"),
-                                None,
-                            )
-                        })?;
+        match request.name.as_ref() {
+            ACTIVATE_EXTERNAL_MCP_NAME => {
+                let params: ActivateExternalMcpRequest =
+                    serde_json::from_value(JsonValue::Object(arguments)).map_err(|error| {
+                        McpError::invalid_params(
+                            format!("invalid activate_external_mcp arguments: {error}"),
+                            None,
+                        )
+                    })?;
 
-                    let Some(toolset) =
-                        resolve_toolset_name(&self.toolsets, &params.external_mcp_name)
-                    else {
-                        return Err(McpError::invalid_params(
-                            format!("unknown external MCP server `{}`", params.external_mcp_name),
-                            Some(json!({
-                                "available_external_mcps": self
-                                    .toolsets
-                                    .iter()
-                                    .map(|toolset| toolset.name.clone())
-                                    .collect::<Vec<_>>()
-                            })),
-                        ));
-                    };
+                let Some(toolset) = resolve_toolset_name(&self.toolsets, &params.external_mcp_name)
+                else {
+                    return Err(McpError::invalid_params(
+                        format!("unknown external MCP server `{}`", params.external_mcp_name),
+                        Some(json!({
+                            "available_external_mcps": self
+                                .toolsets
+                                .iter()
+                                .map(|toolset| toolset.name.clone())
+                                .collect::<Vec<_>>()
+                        })),
+                    ));
+                };
 
-                    Ok(build_activate_tool_result(toolset))
-                }
-                ACTIVATE_EXTERNAL_MCP_TOOL_NAME => {
-                    let params: ActivateExternalMcpToolRequest =
-                        serde_json::from_value(JsonValue::Object(arguments)).map_err(|error| {
-                            McpError::invalid_params(
-                                format!("invalid activate_external_mcp_tool arguments: {error}"),
-                                None,
-                            )
-                        })?;
+                Ok(build_activate_tool_result(toolset))
+            }
+            ACTIVATE_EXTERNAL_MCP_TOOL_NAME => {
+                let params: ActivateExternalMcpToolRequest =
+                    serde_json::from_value(JsonValue::Object(arguments)).map_err(|error| {
+                        McpError::invalid_params(
+                            format!("invalid activate_external_mcp_tool arguments: {error}"),
+                            None,
+                        )
+                    })?;
 
-                    let Some(toolset) =
-                        resolve_toolset_name(&self.toolsets, &params.external_mcp_name)
-                    else {
-                        return Err(McpError::invalid_params(
-                            format!("unknown external MCP server `{}`", params.external_mcp_name),
-                            Some(json!({
-                                "available_external_mcps": self
-                                    .toolsets
-                                    .iter()
-                                    .map(|toolset| toolset.name.clone())
-                                    .collect::<Vec<_>>()
-                            })),
-                        ));
-                    };
+                let Some(toolset) = resolve_toolset_name(&self.toolsets, &params.external_mcp_name)
+                else {
+                    return Err(McpError::invalid_params(
+                        format!("unknown external MCP server `{}`", params.external_mcp_name),
+                        Some(json!({
+                            "available_external_mcps": self
+                                .toolsets
+                                .iter()
+                                .map(|toolset| toolset.name.clone())
+                                .collect::<Vec<_>>()
+                        })),
+                    ));
+                };
 
-                    let Some(tool) = resolve_tool_snapshot(toolset, &params.tool_name) else {
-                        return Err(McpError::invalid_params(
-                            format!(
-                                "unknown tool `{}` in external MCP server `{}`",
-                                params.tool_name, toolset.name
-                            ),
-                            Some(json!({
-                                "available_tools": toolset
-                                    .tools
-                                    .iter()
-                                    .map(|tool| tool.name.clone())
-                                    .collect::<Vec<_>>()
-                            })),
-                        ));
-                    };
+                let Some(tool) = resolve_tool_snapshot(toolset, &params.tool_name) else {
+                    return Err(McpError::invalid_params(
+                        format!(
+                            "unknown tool `{}` in external MCP server `{}`",
+                            params.tool_name, toolset.name
+                        ),
+                        Some(json!({
+                            "available_tools": toolset
+                                .tools
+                                .iter()
+                                .map(|tool| tool.name.clone())
+                                .collect::<Vec<_>>()
+                        })),
+                    ));
+                };
 
-                    Ok(build_activate_tool_detail_result(tool))
-                }
-                CALL_TOOL_IN_EXTERNAL_MCP_NAME => {
-                    let params: CallToolInExternalMcpRequest =
-                        serde_json::from_value(JsonValue::Object(arguments)).map_err(|error| {
-                            McpError::invalid_params(
-                                format!("invalid {} arguments: {error}", request.name),
-                                None,
-                            )
-                        })?;
+                Ok(build_activate_tool_detail_result(tool))
+            }
+            CALL_TOOL_IN_EXTERNAL_MCP_NAME => {
+                let params: CallToolInExternalMcpRequest =
+                    serde_json::from_value(JsonValue::Object(arguments)).map_err(|error| {
+                        McpError::invalid_params(
+                            format!("invalid {} arguments: {error}", request.name),
+                            None,
+                        )
+                    })?;
 
-                    let Some(toolset) =
-                        resolve_toolset_name(&self.toolsets, &params.external_mcp_name)
-                    else {
-                        return Err(McpError::invalid_params(
-                            format!("unknown external MCP server `{}`", params.external_mcp_name),
-                            Some(json!({
-                                "available_external_mcps": self
-                                    .toolsets
-                                    .iter()
-                                    .map(|toolset| toolset.name.clone())
-                                    .collect::<Vec<_>>()
-                            })),
-                        ));
-                    };
+                let Some(toolset) = resolve_toolset_name(&self.toolsets, &params.external_mcp_name)
+                else {
+                    return Err(McpError::invalid_params(
+                        format!("unknown external MCP server `{}`", params.external_mcp_name),
+                        Some(json!({
+                            "available_external_mcps": self
+                                .toolsets
+                                .iter()
+                                .map(|toolset| toolset.name.clone())
+                                .collect::<Vec<_>>()
+                        })),
+                    ));
+                };
 
-                    let arguments = parse_tool_arguments_json(&params.args_in_json)?;
-                    let client = self.get_or_connect_client(toolset).await?;
-                    let stderr_capture = client.stderr.start_capture().await;
-                    let request = match arguments {
-                        Some(arguments) => CallToolRequestParams::new(params.tool_name.clone())
-                            .with_arguments(arguments),
-                        None => CallToolRequestParams::new(params.tool_name.clone()),
-                    };
-                    match client.service.call_tool(request).await {
-                        Ok(result) => {
-                            let _ = stderr_capture.finish().await;
-                            Ok(result)
-                        }
-                        Err(error) => {
-                            let stderr_content = stderr_capture.finish().await;
-                            print_external_command_failure_with_captured_stderr(
-                                "mcp.call_tool_in_external_mcp",
-                                &client.label,
-                                &client.command_line,
-                                "tool-call-failed",
-                                &stderr_content,
-                            )
-                            .await;
-                            Err(map_service_error(error))
-                        }
+                let arguments = parse_tool_arguments_json(&params.args_in_json)?;
+                let client = self.get_or_connect_client(toolset).await?;
+                let stderr_capture = client.stderr.start_capture().await;
+                let request = match arguments {
+                    Some(arguments) => CallToolRequestParams::new(params.tool_name.clone())
+                        .with_arguments(arguments),
+                    None => CallToolRequestParams::new(params.tool_name.clone()),
+                };
+                match client.service.call_tool(request).await {
+                    Ok(result) => {
+                        let _ = stderr_capture.finish().await;
+                        Ok(result)
+                    }
+                    Err(error) => {
+                        let stderr_content = stderr_capture.finish().await;
+                        print_external_command_failure_with_captured_stderr(
+                            "mcp.call_tool_in_external_mcp",
+                            &client.label,
+                            &client.command_line,
+                            "tool-call-failed",
+                            &stderr_content,
+                        )
+                        .await;
+                        Err(map_service_error(error))
                     }
                 }
-                _ => Err(McpError::method_not_found::<CallToolRequestMethod>()),
             }
+            _ => Err(McpError::method_not_found::<CallToolRequestMethod>()),
         }
     }
 }
@@ -708,8 +703,10 @@ mod tests {
                 name: "alpha".to_string(),
                 summary: "Use this when you need Alpha workflows.".to_string(),
                 server: ConfiguredServer {
-                    command: "uvx".to_string(),
-                    args: vec!["alpha".to_string()],
+                    transport: ConfiguredTransport::Stdio {
+                        command: "uvx".to_string(),
+                        args: vec!["alpha".to_string()],
+                    },
                     ..Default::default()
                 },
                 tools: vec![],
@@ -718,8 +715,10 @@ mod tests {
                 name: "beta".to_string(),
                 summary: "Use this for Beta tasks.".to_string(),
                 server: ConfiguredServer {
-                    command: "uvx".to_string(),
-                    args: vec!["beta".to_string()],
+                    transport: ConfiguredTransport::Stdio {
+                        command: "uvx".to_string(),
+                        args: vec!["beta".to_string()],
+                    },
                     ..Default::default()
                 },
                 tools: vec![],
@@ -769,8 +768,10 @@ mod tests {
         assert_eq!(toolsets.len(), 1);
         assert_eq!(toolsets[0].name, "alpha");
         assert_eq!(toolsets[0].summary, "Use Alpha.");
-        assert_eq!(toolsets[0].server.command, "uvx");
-        assert_eq!(toolsets[0].server.args, vec!["alpha-server".to_string()]);
+        assert_eq!(
+            toolsets[0].server.stdio_transport(),
+            Some(("uvx", ["alpha-server".to_string()].as_slice()))
+        );
     }
 
     #[test]
@@ -830,8 +831,10 @@ mod tests {
             name: "team-alpha".to_string(),
             summary: "Use Alpha.".to_string(),
             server: ConfiguredServer {
-                command: "uvx".to_string(),
-                args: vec!["alpha".to_string()],
+                transport: ConfiguredTransport::Stdio {
+                    command: "uvx".to_string(),
+                    args: vec!["alpha".to_string()],
+                },
                 ..Default::default()
             },
             tools: vec![],
@@ -847,8 +850,10 @@ mod tests {
             name: "alpha".to_string(),
             summary: "Use Alpha.".to_string(),
             server: ConfiguredServer {
-                command: "uvx".to_string(),
-                args: vec!["alpha".to_string()],
+                transport: ConfiguredTransport::Stdio {
+                    command: "uvx".to_string(),
+                    args: vec!["alpha".to_string()],
+                },
                 ..Default::default()
             },
             tools: vec![ToolSnapshot {
@@ -882,8 +887,10 @@ mod tests {
             name: "alpha".to_string(),
             summary: "Use Alpha.".to_string(),
             server: ConfiguredServer {
-                command: "uvx".to_string(),
-                args: vec!["alpha".to_string()],
+                transport: ConfiguredTransport::Stdio {
+                    command: "uvx".to_string(),
+                    args: vec!["alpha".to_string()],
+                },
                 ..Default::default()
             },
             tools: vec![ToolSnapshot {
@@ -920,8 +927,10 @@ mod tests {
             name: "alpha".to_string(),
             summary: "Use Alpha.".to_string(),
             server: ConfiguredServer {
-                command: "uvx".to_string(),
-                args: vec!["alpha".to_string()],
+                transport: ConfiguredTransport::Stdio {
+                    command: "uvx".to_string(),
+                    args: vec!["alpha".to_string()],
+                },
                 ..Default::default()
             },
             tools: vec![ToolSnapshot {
