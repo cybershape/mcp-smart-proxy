@@ -132,7 +132,7 @@ fn validate_proxy_stdio_launch(
     stdin_is_terminal: bool,
     stdout_is_terminal: bool,
 ) -> Result<(), Box<dyn Error>> {
-    if stdin_is_terminal && stdout_is_terminal {
+    if stdin_is_terminal || stdout_is_terminal {
         return Err(operation_error(
             "mcp.serve.stdio_host",
             STDIO_HOST_REQUIRED_MESSAGE,
@@ -1018,8 +1018,26 @@ mod tests {
     #[test]
     fn allows_running_proxy_stdio_server_when_connected_to_a_host() {
         validate_proxy_stdio_launch(false, false).unwrap();
-        validate_proxy_stdio_launch(false, true).unwrap();
-        validate_proxy_stdio_launch(true, false).unwrap();
+    }
+
+    #[test]
+    fn rejects_running_proxy_stdio_server_when_stdin_is_terminal() {
+        let error = validate_proxy_stdio_launch(true, false).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            format!("mcp.serve.stdio_host: {STDIO_HOST_REQUIRED_MESSAGE}")
+        );
+    }
+
+    #[test]
+    fn rejects_running_proxy_stdio_server_when_stdout_is_terminal() {
+        let error = validate_proxy_stdio_launch(false, true).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            format!("mcp.serve.stdio_host: {STDIO_HOST_REQUIRED_MESSAGE}")
+        );
     }
 
     fn unique_test_home(name: &str) -> std::path::PathBuf {

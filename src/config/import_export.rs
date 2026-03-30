@@ -217,9 +217,10 @@ pub(crate) fn replace_codex_mcp_servers_from_path(
         Some(Value::Table(servers)) => servers.clone(),
         Some(_) => return Err("`mcp_servers` in Codex config must be a table".into()),
     };
+    let backup_servers = codex_backup_servers(&existing_servers);
     let backup_path = sibling_backup_path(config_path, "msp-backup");
 
-    merge_codex_servers_into_backup(&backup_path, &existing_servers)?;
+    merge_codex_servers_into_backup(&backup_path, &backup_servers)?;
 
     if config.remove("mcp_servers").is_some() {
         save_config_table(config_path, &config)?;
@@ -228,7 +229,7 @@ pub(crate) fn replace_codex_mcp_servers_from_path(
     Ok(ReplaceMcpServersResult {
         config_path: config_path.to_path_buf(),
         backup_path,
-        backed_up_server_count: existing_servers.len(),
+        backed_up_server_count: backup_servers.len(),
         removed_server_count: existing_servers.len(),
     })
 }
@@ -245,9 +246,10 @@ pub(crate) fn replace_opencode_mcp_servers_from_path(
         Some(JsonValue::Object(servers)) => servers.clone(),
         Some(_) => return Err("`mcp` in OpenCode config must be an object".into()),
     };
+    let backup_servers = opencode_backup_servers(&existing_servers);
     let backup_path = sibling_backup_path(config_path, "msp-backup");
 
-    merge_opencode_servers_into_backup(&backup_path, &existing_servers)?;
+    merge_opencode_servers_into_backup(&backup_path, &backup_servers)?;
 
     if root.remove("mcp").is_some() {
         save_opencode_config(config_path, &config)?;
@@ -256,7 +258,7 @@ pub(crate) fn replace_opencode_mcp_servers_from_path(
     Ok(ReplaceMcpServersResult {
         config_path: config_path.to_path_buf(),
         backup_path,
-        backed_up_server_count: existing_servers.len(),
+        backed_up_server_count: backup_servers.len(),
         removed_server_count: existing_servers.len(),
     })
 }
@@ -273,9 +275,10 @@ pub(crate) fn replace_claude_mcp_servers_from_path(
         Some(JsonValue::Object(servers)) => servers.clone(),
         Some(_) => return Err("`mcpServers` in Claude Code config must be an object".into()),
     };
+    let backup_servers = claude_backup_servers(&existing_servers);
     let backup_path = sibling_backup_path(config_path, "msp-backup");
 
-    merge_claude_servers_into_backup(&backup_path, &existing_servers)?;
+    merge_claude_servers_into_backup(&backup_path, &backup_servers)?;
 
     if root.remove("mcpServers").is_some() {
         save_claude_config(config_path, &config)?;
@@ -284,7 +287,7 @@ pub(crate) fn replace_claude_mcp_servers_from_path(
     Ok(ReplaceMcpServersResult {
         config_path: config_path.to_path_buf(),
         backup_path,
-        backed_up_server_count: existing_servers.len(),
+        backed_up_server_count: backup_servers.len(),
         removed_server_count: existing_servers.len(),
     })
 }
@@ -304,6 +307,7 @@ pub(crate) fn restore_codex_mcp_servers_from_path(
             )
         })?
         .clone();
+    let restored_servers = codex_backup_servers(&restored_servers);
 
     let mut config = load_config_table(config_path)?;
     let removed_self_server_count = remove_codex_self_servers(&mut config)?;
@@ -333,6 +337,7 @@ pub(crate) fn restore_opencode_mcp_servers_from_path(
             )
         })?
         .clone();
+    let restored_servers = opencode_backup_servers(&restored_servers);
 
     let mut config = load_opencode_config(config_path)?;
     let removed_self_server_count = remove_opencode_self_servers(&mut config)?;
@@ -362,6 +367,7 @@ pub(crate) fn restore_claude_mcp_servers_from_path(
             )
         })?
         .clone();
+    let restored_servers = claude_backup_servers(&restored_servers);
 
     let mut config = load_claude_config(config_path)?;
     let removed_self_server_count = remove_claude_self_servers(&mut config)?;
@@ -922,6 +928,19 @@ fn merge_codex_servers_into_backup(
     Ok(())
 }
 
+fn codex_backup_servers(servers: &Table) -> Table {
+    servers
+        .iter()
+        .filter(|(_, value)| {
+            value
+                .as_table()
+                .and_then(codex_server_raw_command)
+                .is_none_or(|raw_command| !is_self_server_command(&raw_command))
+        })
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect()
+}
+
 fn merge_opencode_servers_into_backup(
     backup_path: &Path,
     servers: &JsonMap<String, JsonValue>,
@@ -945,6 +964,19 @@ fn merge_opencode_servers_into_backup(
     Ok(())
 }
 
+fn opencode_backup_servers(servers: &JsonMap<String, JsonValue>) -> JsonMap<String, JsonValue> {
+    servers
+        .iter()
+        .filter(|(_, value)| {
+            value
+                .as_object()
+                .and_then(opencode_server_raw_command)
+                .is_none_or(|raw_command| !is_self_server_command(&raw_command))
+        })
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect()
+}
+
 fn merge_claude_servers_into_backup(
     backup_path: &Path,
     servers: &JsonMap<String, JsonValue>,
@@ -966,6 +998,19 @@ fn merge_claude_servers_into_backup(
 
     save_claude_config(backup_path, &backup)?;
     Ok(())
+}
+
+fn claude_backup_servers(servers: &JsonMap<String, JsonValue>) -> JsonMap<String, JsonValue> {
+    servers
+        .iter()
+        .filter(|(_, value)| {
+            value
+                .as_object()
+                .and_then(claude_server_raw_command)
+                .is_none_or(|raw_command| !is_self_server_command(&raw_command))
+        })
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect()
 }
 
 fn merge_codex_servers_into_target(

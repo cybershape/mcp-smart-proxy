@@ -365,6 +365,81 @@ fn restores_codex_servers_from_backup_after_removing_self_servers() {
 }
 
 #[test]
+fn replace_codex_does_not_back_up_self_servers() {
+    let config_path = unique_test_path("codex-replace-filters-self.toml");
+    let backup_path = sibling_backup_path(&config_path, "msp-backup");
+    fs::write(
+        &config_path,
+        r#"
+                [mcp_servers.msp]
+                command = "msp"
+                args = ["mcp", "--provider", "codex"]
+
+                [mcp_servers.alpha]
+                command = "npx"
+                args = ["-y", "alpha-server"]
+            "#,
+    )
+    .unwrap();
+
+    let replaced = replace_codex_mcp_servers_from_path(&config_path).unwrap();
+
+    assert_eq!(replaced.backed_up_server_count, 1);
+    assert_eq!(replaced.removed_server_count, 2);
+
+    let backup = load_config_table(&backup_path).unwrap();
+    let servers = backup["mcp_servers"].as_table().unwrap();
+    assert_eq!(servers.len(), 1);
+    assert!(servers.get("msp").is_none());
+    assert_eq!(servers["alpha"]["command"].as_str(), Some("npx"));
+
+    fs::remove_file(config_path).unwrap();
+    fs::remove_file(backup_path).unwrap();
+}
+
+#[test]
+fn restore_codex_ignores_self_servers_present_in_backup() {
+    let config_path = unique_test_path("codex-restore-filters-backup-self.toml");
+    let backup_path = sibling_backup_path(&config_path, "msp-backup");
+    fs::write(
+        &config_path,
+        r#"
+                [mcp_servers.current]
+                command = "msp"
+                args = ["mcp", "--provider", "codex"]
+            "#,
+    )
+    .unwrap();
+    fs::write(
+        &backup_path,
+        r#"
+                [mcp_servers.msp]
+                command = "msp"
+                args = ["mcp", "--provider", "codex"]
+
+                [mcp_servers.alpha]
+                command = "npx"
+                args = ["-y", "alpha-server"]
+            "#,
+    )
+    .unwrap();
+
+    let restored = restore_codex_mcp_servers_from_path(&config_path).unwrap();
+
+    assert_eq!(restored.restored_server_count, 1);
+
+    let config = load_config_table(&config_path).unwrap();
+    let servers = config["mcp_servers"].as_table().unwrap();
+    assert_eq!(servers.len(), 1);
+    assert!(servers.get("msp").is_none());
+    assert!(servers.get("current").is_none());
+    assert!(servers.get("alpha").is_some());
+
+    fs::remove_file(config_path).unwrap();
+    fs::remove_file(backup_path).unwrap();
+}
+
+#[test]
 fn recognizes_existing_opencode_self_server_with_matching_provider() {
     let home = unique_test_path("opencode-existing-home");
     fs::create_dir_all(home.join(".config/opencode")).unwrap();
@@ -533,6 +608,90 @@ fn restores_opencode_servers_from_backup_after_removing_self_servers() {
 }
 
 #[test]
+fn replace_opencode_does_not_back_up_self_servers() {
+    let config_path = unique_test_path("opencode-replace-filters-self.json");
+    let backup_path = sibling_backup_path(&config_path, "msp-backup");
+    fs::write(
+        &config_path,
+        r#"{
+                "mcp": {
+                    "msp": {
+                        "type": "local",
+                        "command": ["msp", "mcp", "--provider", "opencode"]
+                    },
+                    "alpha": {
+                        "type": "local",
+                        "command": ["npx", "-y", "alpha-server"]
+                    }
+                }
+            }"#,
+    )
+    .unwrap();
+
+    let replaced = replace_opencode_mcp_servers_from_path(&config_path).unwrap();
+
+    assert_eq!(replaced.backed_up_server_count, 1);
+    assert_eq!(replaced.removed_server_count, 2);
+
+    let backup = load_opencode_config(&backup_path).unwrap();
+    let servers = backup["mcp"].as_object().unwrap();
+    assert_eq!(servers.len(), 1);
+    assert!(servers.get("msp").is_none());
+    assert!(servers.get("alpha").is_some());
+
+    fs::remove_file(config_path).unwrap();
+    fs::remove_file(backup_path).unwrap();
+}
+
+#[test]
+fn restore_opencode_ignores_self_servers_present_in_backup() {
+    let config_path = unique_test_path("opencode-restore-filters-backup-self.json");
+    let backup_path = sibling_backup_path(&config_path, "msp-backup");
+    fs::write(
+        &config_path,
+        r#"{
+                "mcp": {
+                    "current": {
+                        "type": "local",
+                        "command": ["msp", "mcp", "--provider", "opencode"]
+                    }
+                }
+            }"#,
+    )
+    .unwrap();
+    fs::write(
+        &backup_path,
+        r#"{
+                "mcp": {
+                    "msp": {
+                        "type": "local",
+                        "command": ["msp", "mcp", "--provider", "opencode"]
+                    },
+                    "alpha": {
+                        "type": "local",
+                        "command": ["npx", "-y", "alpha-server"]
+                    }
+                }
+            }"#,
+    )
+    .unwrap();
+
+    let restored = restore_opencode_mcp_servers_from_path(&config_path).unwrap();
+
+    assert_eq!(restored.restored_server_count, 1);
+
+    let config = load_opencode_config(&config_path).unwrap();
+    let servers = config["mcp"].as_object().unwrap();
+    assert_eq!(servers.len(), 1);
+    assert!(servers.get("msp").is_none());
+    assert!(servers.get("current").is_none());
+    assert!(servers.get("alpha").is_some());
+
+    fs::remove_file(config_path).unwrap();
+    fs::remove_file(backup_path).unwrap();
+}
+
+#[test]
 fn replaces_claude_servers_after_merging_backup_without_duplicates() {
     let config_path = unique_test_path("claude-replace.json");
     let backup_path = sibling_backup_path(&config_path, "msp-backup");
@@ -649,6 +808,95 @@ fn restores_claude_servers_from_backup_after_removing_self_servers() {
     assert!(servers.get("proxy").is_none());
     assert_eq!(servers["alpha"]["command"].as_str(), Some("npx"));
     assert_eq!(servers["beta"]["command"].as_str(), Some("uvx"));
+
+    fs::remove_file(config_path).unwrap();
+    fs::remove_file(backup_path).unwrap();
+}
+
+#[test]
+fn replace_claude_does_not_back_up_self_servers() {
+    let config_path = unique_test_path("claude-replace-filters-self.json");
+    let backup_path = sibling_backup_path(&config_path, "msp-backup");
+    fs::write(
+        &config_path,
+        r#"{
+                "mcpServers": {
+                    "msp": {
+                        "type": "stdio",
+                        "command": "msp",
+                        "args": ["mcp", "--provider", "claude"]
+                    },
+                    "alpha": {
+                        "type": "stdio",
+                        "command": "npx",
+                        "args": ["-y", "alpha-server"]
+                    }
+                }
+            }"#,
+    )
+    .unwrap();
+
+    let replaced = replace_claude_mcp_servers_from_path(&config_path).unwrap();
+
+    assert_eq!(replaced.backed_up_server_count, 1);
+    assert_eq!(replaced.removed_server_count, 2);
+
+    let backup = load_claude_config(&backup_path).unwrap();
+    let servers = backup["mcpServers"].as_object().unwrap();
+    assert_eq!(servers.len(), 1);
+    assert!(servers.get("msp").is_none());
+    assert!(servers.get("alpha").is_some());
+
+    fs::remove_file(config_path).unwrap();
+    fs::remove_file(backup_path).unwrap();
+}
+
+#[test]
+fn restore_claude_ignores_self_servers_present_in_backup() {
+    let config_path = unique_test_path("claude-restore-filters-backup-self.json");
+    let backup_path = sibling_backup_path(&config_path, "msp-backup");
+    fs::write(
+        &config_path,
+        r#"{
+                "mcpServers": {
+                    "current": {
+                        "type": "stdio",
+                        "command": "msp",
+                        "args": ["mcp", "--provider", "claude"]
+                    }
+                }
+            }"#,
+    )
+    .unwrap();
+    fs::write(
+        &backup_path,
+        r#"{
+                "mcpServers": {
+                    "msp": {
+                        "type": "stdio",
+                        "command": "msp",
+                        "args": ["mcp", "--provider", "claude"]
+                    },
+                    "alpha": {
+                        "type": "stdio",
+                        "command": "npx",
+                        "args": ["-y", "alpha-server"]
+                    }
+                }
+            }"#,
+    )
+    .unwrap();
+
+    let restored = restore_claude_mcp_servers_from_path(&config_path).unwrap();
+
+    assert_eq!(restored.restored_server_count, 1);
+
+    let config = load_claude_config(&config_path).unwrap();
+    let servers = config["mcpServers"].as_object().unwrap();
+    assert_eq!(servers.len(), 1);
+    assert!(servers.get("msp").is_none());
+    assert!(servers.get("current").is_none());
+    assert!(servers.get("alpha").is_some());
 
     fs::remove_file(config_path).unwrap();
     fs::remove_file(backup_path).unwrap();

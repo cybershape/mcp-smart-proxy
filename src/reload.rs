@@ -116,6 +116,13 @@ async fn reload_server_with_resolved_provider(
             error,
         )
     })? {
+        refresh_cached_tools_timestamp(&cache_path).map_err(|error| {
+            operation_error(
+                "reload.refresh_cache_timestamp",
+                format!("failed to refresh cache timestamp for `{resolved_name}`"),
+                error,
+            )
+        })?;
         return Ok(ReloadResult {
             cache_path,
             updated: false,
@@ -299,6 +306,18 @@ fn read_cached_tools(path: &Path) -> Result<CachedTools, Box<dyn Error>> {
             Box::new(error),
         )
     })
+}
+
+fn refresh_cached_tools_timestamp(path: &Path) -> Result<(), Box<dyn Error>> {
+    let mut cached = read_cached_tools(path)?;
+    cached.fetched_at_epoch_ms = unix_epoch_ms().map_err(|error| {
+        operation_error(
+            "reload.refresh_cache_timestamp.timestamp",
+            "failed to compute refreshed cache timestamp",
+            error,
+        )
+    })?;
+    write_cache(path, &cached)
 }
 
 fn serialize_tool_snapshots(tools: &[ToolSnapshot]) -> Result<String, Box<dyn Error>> {
@@ -542,6 +561,42 @@ mod tests {
         write_cache(&cache_path, &payload).unwrap();
 
         assert!(!cached_tools_match(&cache_path, &updated_tools).unwrap());
+
+        fs::remove_file(cache_path).unwrap();
+    }
+
+    #[test]
+    fn refreshes_cached_tools_timestamp_without_changing_tools() {
+        let cache_path = env::temp_dir().join(format!(
+            "mcp-smart-proxy-reload-cache-refresh-{}.json",
+            unix_epoch_ms().unwrap()
+        ));
+        let payload = CachedTools {
+            server: "demo".to_string(),
+            summary: "old summary".to_string(),
+            fetched_at_epoch_ms: 1,
+            tools: vec![ToolSnapshot {
+                name: "search".to_string(),
+                title: Some("Search".to_string()),
+                description: Some("Find items".to_string()),
+                input_schema: json!({"type":"object"}),
+                output_schema: None,
+                annotations: None,
+                execution: None,
+                icons: None,
+                meta: None,
+            }],
+        };
+
+        write_cache(&cache_path, &payload).unwrap();
+        refresh_cached_tools_timestamp(&cache_path).unwrap();
+
+        let refreshed = read_cached_tools(&cache_path).unwrap();
+        assert_eq!(refreshed.server, payload.server);
+        assert_eq!(refreshed.summary, payload.summary);
+        assert_eq!(refreshed.tools.len(), payload.tools.len());
+        assert_eq!(refreshed.tools[0].name, payload.tools[0].name);
+        assert!(refreshed.fetched_at_epoch_ms > payload.fetched_at_epoch_ms);
 
         fs::remove_file(cache_path).unwrap();
     }
