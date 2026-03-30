@@ -119,6 +119,11 @@ fn resolve_remote_headers(
     for (name, value) in headers {
         let header_name = HeaderName::from_bytes(name.as_bytes())
             .map_err(|error| format!("invalid remote header name `{name}`: {error}"))?;
+        if is_config_reserved_header(&header_name) {
+            return Err(
+                format!("remote header `{name}` is reserved and cannot be configured").into(),
+            );
+        }
         let header_value = resolve_remote_header_value(value, env_values)?;
         let header_value = HeaderValue::from_str(&header_value)
             .map_err(|error| format!("invalid remote header value for `{name}`: {error}"))?;
@@ -794,7 +799,13 @@ fn is_reserved_header(name: &HeaderName) -> bool {
     value.eq_ignore_ascii_case(ACCEPT.as_str())
         || value.eq_ignore_ascii_case(HEADER_SESSION_ID)
         || value.eq_ignore_ascii_case(HEADER_LAST_EVENT_ID)
-        || value.eq_ignore_ascii_case(HEADER_MCP_PROTOCOL_VERSION)
+}
+
+fn is_config_reserved_header(name: &HeaderName) -> bool {
+    is_reserved_header(name)
+        || name
+            .as_str()
+            .eq_ignore_ascii_case(HEADER_MCP_PROTOCOL_VERSION)
 }
 
 #[derive(Clone)]
@@ -868,4 +879,43 @@ fn sibling_lock_path(path: &Path) -> PathBuf {
     let mut file_name = path.file_name().map(ToOwned::to_owned).unwrap_or_default();
     file_name.push(".lock");
     path.with_file_name(file_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_headers_allow_negotiated_protocol_version() {
+        let client = reqwest::Client::new();
+        let request = client.get("http://example.com");
+        let headers = HashMap::from([(
+            HeaderName::from_static("mcp-protocol-version"),
+            HeaderValue::from_static("2025-06-18"),
+        )]);
+
+        let request = OAuthAwareHttpClient::apply_custom_headers(request, headers)
+            .expect("negotiated protocol header should be allowed")
+            .build()
+            .expect("request should build");
+
+        assert_eq!(
+            request.headers().get(HEADER_MCP_PROTOCOL_VERSION),
+            Some(&HeaderValue::from_static("2025-06-18"))
+        );
+    }
+
+    #[test]
+    fn configured_headers_reject_protocol_version() {
+        let headers =
+            BTreeMap::from([("mcp-protocol-version".to_string(), "2025-06-18".to_string())]);
+
+        let error = resolve_remote_headers(&headers, &BTreeMap::new())
+            .expect_err("configured protocol header should be rejected");
+
+        assert_eq!(
+            error.to_string(),
+            "remote header `mcp-protocol-version` is reserved and cannot be configured"
+        );
+    }
 }
