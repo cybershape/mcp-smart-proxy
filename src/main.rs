@@ -4,6 +4,7 @@ mod cli;
 mod commands;
 mod config;
 mod console;
+mod downstream_client;
 mod env_template;
 mod fs_util;
 mod mcp_server;
