@@ -39,7 +39,14 @@ curl -fsSL https://raw.githubusercontent.com/cybershape/mcp-smart-proxy/master/i
 
 The installer resolves the latest version through the GitHub Releases redirect path instead of the GitHub REST API, which avoids unauthenticated `api.github.com` rate limits.
 
-For non-root installs the installer writes `msp` to `~/.local/bin` by default so the running user can later replace that binary during background self-update. Root installs still default to `/usr/local/bin`.
+By default the installer writes `msp` to a platform-specific binary directory:
+
+- macOS on Apple Silicon: `/opt/homebrew/bin`
+- macOS on Intel: `/usr/local/bin`
+- Linux or other supported non-macOS platforms when running as root: `/usr/local/bin`
+- Linux or other supported non-macOS platforms when running as a regular user: `~/.local/bin`
+
+On non-macOS platforms, the non-root default keeps the installed binary writable by the running user so background self-update can replace it later.
 
 Install to a custom location instead:
 

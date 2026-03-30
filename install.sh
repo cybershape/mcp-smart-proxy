@@ -138,6 +138,25 @@ default_install_dir() {
     return
   fi
 
+  local os
+  local arch
+
+  os="$(uname -s)"
+  arch="$(uname -m)"
+
+  if [[ "$os" == "Darwin" ]]; then
+    case "$arch" in
+      arm64 | aarch64)
+        printf '/opt/homebrew/bin\n'
+        return
+        ;;
+      x86_64 | amd64)
+        printf '/usr/local/bin\n'
+        return
+        ;;
+    esac
+  fi
+
   if [[ "$(id -u)" -eq 0 ]]; then
     printf '/usr/local/bin\n'
     return
