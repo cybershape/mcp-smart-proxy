@@ -10,9 +10,10 @@ use crate::types::{CachedTools, CachedToolsetRecord, ToolSnapshot};
 
 use super::cache::load_cached_toolsets_from_home;
 use super::tools::{
-    CALL_TOOL_IN_EXTERNAL_MCP_NAME, STDIO_HOST_REQUIRED_MESSAGE, build_activate_tool_description,
-    build_activate_tool_detail_result, build_activate_tool_result,
-    call_tool_in_external_mcp_definition, parse_tool_arguments_json, resolve_toolset_name,
+    CALL_TOOL_IN_EXTERNAL_MCP_NAME, REQUEST_USER_INPUT_IN_POPUP_NAME, STDIO_HOST_REQUIRED_MESSAGE,
+    build_activate_tool_description, build_activate_tool_detail_result, build_activate_tool_result,
+    call_tool_in_external_mcp_definition, parse_tool_arguments_json,
+    request_user_input_in_popup_definition, resolve_toolset_name,
 };
 use super::validate_proxy_stdio_launch;
 
@@ -244,6 +245,19 @@ fn call_tool_definition_contains_expected_fields() {
     assert!(properties.contains_key("external_mcp_name"));
     assert!(properties.contains_key("tool_name"));
     assert!(properties.contains_key("args_in_json"));
+}
+
+#[test]
+fn popup_input_tool_definition_contains_questions_schema() {
+    let tool = request_user_input_in_popup_definition();
+    let properties = tool
+        .input_schema
+        .get("properties")
+        .and_then(JsonValue::as_object)
+        .unwrap();
+
+    assert_eq!(tool.name.as_ref(), REQUEST_USER_INPUT_IN_POPUP_NAME);
+    assert!(properties.contains_key("questions"));
 }
 
 #[test]

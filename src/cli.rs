@@ -104,6 +104,11 @@ pub enum Command {
         #[arg(long, value_enum)]
         provider: Option<ProviderName>,
     },
+    /// Open popup-based interactive input helpers.
+    Input {
+        #[command(subcommand)]
+        command: InputCommand,
+    },
     /// Manage the shared background daemon.
     Daemon {
         #[arg(long, value_name = "PATH")]
@@ -121,6 +126,14 @@ pub enum DaemonCommand {
     #[command(alias = "exit")]
     Stop,
     Restart,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum InputCommand {
+    /// Open a sample popup dialog for manual testing.
+    Test,
+    #[command(hide = true)]
+    Popup,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -258,6 +271,18 @@ mod tests {
                 assert!(matches!(source, ImportSource::Claude));
             }
             other => panic!("expected import command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_input_test_command() {
+        let cli = Cli::parse_from(["msp", "input", "test"]);
+
+        match cli.command {
+            Some(Command::Input { command }) => {
+                assert!(matches!(command, InputCommand::Test));
+            }
+            other => panic!("expected input command, got {other:?}"),
         }
     }
 

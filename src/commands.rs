@@ -7,7 +7,7 @@ use clap::Parser;
 
 #[cfg(test)]
 use crate::cli::ImportSource;
-use crate::cli::{Cli, Command, DaemonCommand, ProviderName};
+use crate::cli::{Cli, Command, DaemonCommand, InputCommand, ProviderName};
 use crate::config::{
     add_server, list_servers, load_config_table, load_server_config, remove_server,
     set_server_enabled, update_server_config,
@@ -24,11 +24,13 @@ use crate::version_check;
 mod auth_cmd;
 mod config_cmd;
 mod import_cmd;
+mod input_cmd;
 mod provider;
 
 use auth_cmd::{run_login_command, run_logout_command};
 use config_cmd::{ConfigCommandArgs, print_server_config};
 use import_cmd::{run_import_command, run_install_command, run_restore_command};
+use input_cmd::{run_input_popup_command, run_input_test_command};
 use provider::resolve_default_command_provider;
 #[cfg(test)]
 use provider::{resolve_import_provider, resolve_install_import_provider};
@@ -47,7 +49,11 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
         version_check::spawn_periodic_self_update(raw_args.clone());
     } else if !matches!(
         &cli.command,
-        Some(Command::Update) | Some(Command::Daemon { .. })
+        Some(Command::Update)
+            | Some(Command::Daemon { .. })
+            | Some(Command::Input {
+                command: InputCommand::Popup,
+            })
     ) {
         version_check::print_cached_update_notice();
     }
@@ -118,6 +124,10 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
             name: None,
         }) => run_reload_all_command(&config_path, provider).await?,
         Some(Command::Mcp { provider }) => run_mcp_command(&config_path, provider).await?,
+        Some(Command::Input { command }) => match command {
+            InputCommand::Test => run_input_test_command()?,
+            InputCommand::Popup => run_input_popup_command()?,
+        },
         Some(Command::Daemon { socket, command }) => {
             run_daemon_command(&config_path, socket.as_deref(), command).await?
         }

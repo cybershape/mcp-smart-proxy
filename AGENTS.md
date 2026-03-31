@@ -28,6 +28,7 @@
 - Keep self-update logic split by concern: version comparison, state-file persistence, binary installation, and runtime orchestration should not live in a single Rust module.
 - Keep local config record construction centralized: adding or importing a server should go through shared draft builders instead of duplicating transport-to-table conversion logic.
 - Keep MCP proxy logic split between cache loading, tool-schema helpers, downstream client lifecycle, and request dispatch so `src/mcp_server/` remains easy to extend without re-reading one large file.
+- Keep popup input logic split by concern: shared request/response types stay under `src/input_popup/`, the iced UI stays in its own module, and CLI/MCP entrypoints should call the shared popup runner instead of duplicating dialog behavior.
 
 # Packages
 

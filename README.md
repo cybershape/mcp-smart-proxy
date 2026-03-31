@@ -19,10 +19,11 @@ The installed binary name is `msp`. Running `msp` without arguments shows the to
 
 1. Connects to each configured MCP server and caches its tool metadata.
 2. Generates a short summary for each server by using a configured provider: `codex`, `opencode`, or `claude`.
-3. Starts a stdio MCP proxy that exposes only these three tools:
+3. Starts a stdio MCP proxy that exposes only these four tools:
    - `activate_external_mcp`
    - `activate_external_mcp_tool`
    - `call_tool_in_external_mcp`
+   - `request_user_input_in_popup`
 
 Agents first inspect the cached server index, optionally inspect one tool definition, and then call the downstream tool through the proxy.
 
@@ -35,6 +36,7 @@ When a host starts `msp mcp --provider <provider>`, `msp` auto-starts one backgr
 - The `opencode` CLI when using `--provider opencode`
 - The `claude` CLI when using `--provider claude`
 - A browser session for remote MCP servers that require OAuth login
+- A desktop session when using popup input dialogs
 
 ## Install
 
@@ -217,6 +219,16 @@ msp reload --provider codex
 ```
 
 `reload` fetches the downstream tool list, compares it to the cache, and only regenerates the summary when the tool list changed.
+
+### Test popup input
+
+Open a sample popup dialog locally:
+
+```bash
+msp input test
+```
+
+The MCP tool `request_user_input_in_popup` uses the same popup flow. It always appends a final `Other` option, returns one answer per question, and returns an empty `answers` object when the user cancels or closes the dialog.
 
 ### Log in or out of a remote server
 

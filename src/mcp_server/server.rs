@@ -12,14 +12,15 @@ use rmcp::{
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use crate::daemon;
+use crate::input_popup::{PopupInputRequest, request_user_input_in_popup};
 use crate::types::CachedToolsetRecord;
 
 use super::tools::{
     ACTIVATE_EXTERNAL_MCP_NAME, ACTIVATE_EXTERNAL_MCP_TOOL_NAME, ActivateExternalMcpRequest,
     ActivateExternalMcpToolRequest, CALL_TOOL_IN_EXTERNAL_MCP_NAME, CallToolInExternalMcpRequest,
-    ToolCatalog, build_activate_tool_detail_result, build_activate_tool_result,
-    parse_tool_arguments_json, parse_tool_request, resolve_tool_snapshot_or_error,
-    resolve_toolset_or_error,
+    REQUEST_USER_INPUT_IN_POPUP_NAME, ToolCatalog, build_activate_tool_detail_result,
+    build_activate_tool_result, parse_tool_arguments_json, parse_tool_request,
+    resolve_tool_snapshot_or_error, resolve_toolset_or_error,
 };
 
 pub(super) struct SmartProxyMcpServer {
@@ -72,6 +73,22 @@ impl SmartProxyMcpServer {
             .await
     }
 
+    async fn call_request_user_input_in_popup(
+        &self,
+        arguments: JsonMap<String, JsonValue>,
+    ) -> Result<CallToolResult, McpError> {
+        let params: PopupInputRequest =
+            parse_tool_request(REQUEST_USER_INPUT_IN_POPUP_NAME, arguments)?;
+        let response = request_user_input_in_popup(&params)
+            .await
+            .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+
+        Ok(CallToolResult::structured(
+            serde_json::to_value(response)
+                .map_err(|error| McpError::internal_error(error.to_string(), None))?,
+        ))
+    }
+
     async fn call_downstream_tool(
         &self,
         toolset: &CachedToolsetRecord,
@@ -94,7 +111,7 @@ impl ServerHandler for SmartProxyMcpServer {
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::default();
         info.instructions = Some(
-            "Use `activate_external_mcp` to inspect cached tool names, `activate_external_mcp_tool` to inspect one full cached tool definition, then `call_tool_in_external_mcp` to invoke a specific downstream MCP tool."
+            "Use `activate_external_mcp` to inspect cached tool names, `activate_external_mcp_tool` to inspect one full cached tool definition, `call_tool_in_external_mcp` to invoke a specific downstream MCP tool, and `request_user_input_in_popup` when you need a focused popup choice from the user."
                 .into(),
         );
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
@@ -129,6 +146,9 @@ impl ServerHandler for SmartProxyMcpServer {
             ACTIVATE_EXTERNAL_MCP_NAME => self.call_activate_tool(arguments).await,
             ACTIVATE_EXTERNAL_MCP_TOOL_NAME => self.call_activate_tool_detail(arguments).await,
             CALL_TOOL_IN_EXTERNAL_MCP_NAME => self.call_external_tool(arguments).await,
+            REQUEST_USER_INPUT_IN_POPUP_NAME => {
+                self.call_request_user_input_in_popup(arguments).await
+            }
             _ => Err(McpError::method_not_found::<CallToolRequestMethod>()),
         }
     }

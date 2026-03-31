@@ -5,12 +5,14 @@ use rmcp::{
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 
+use crate::input_popup::popup_input_schema;
 use crate::paths::sanitize_name;
 use crate::types::{CachedToolsetRecord, ToolSnapshot};
 
 pub(super) const ACTIVATE_EXTERNAL_MCP_NAME: &str = "activate_external_mcp";
 pub(super) const ACTIVATE_EXTERNAL_MCP_TOOL_NAME: &str = "activate_external_mcp_tool";
 pub(super) const CALL_TOOL_IN_EXTERNAL_MCP_NAME: &str = "call_tool_in_external_mcp";
+pub(super) const REQUEST_USER_INPUT_IN_POPUP_NAME: &str = "request_user_input_in_popup";
 pub(super) const STDIO_HOST_REQUIRED_MESSAGE: &str = "`msp mcp` is a stdio MCP server and must be started by an MCP client such as Codex, OpenCode, or Claude Code instead of running directly in a terminal";
 
 #[derive(Debug, Deserialize)]
@@ -36,6 +38,7 @@ pub(super) struct ToolCatalog {
     activate_tool: Tool,
     activate_tool_detail: Tool,
     call_tool_in_external_mcp: Tool,
+    request_user_input_in_popup: Tool,
 }
 
 impl ToolCatalog {
@@ -46,6 +49,7 @@ impl ToolCatalog {
             call_tool_in_external_mcp: call_tool_in_external_mcp_definition(
                 CALL_TOOL_IN_EXTERNAL_MCP_NAME,
             ),
+            request_user_input_in_popup: request_user_input_in_popup_definition(),
         }
     }
 
@@ -54,6 +58,7 @@ impl ToolCatalog {
             self.activate_tool.clone(),
             self.activate_tool_detail.clone(),
             self.call_tool_in_external_mcp.clone(),
+            self.request_user_input_in_popup.clone(),
         ]
     }
 
@@ -62,6 +67,7 @@ impl ToolCatalog {
             ACTIVATE_EXTERNAL_MCP_NAME => Some(self.activate_tool.clone()),
             ACTIVATE_EXTERNAL_MCP_TOOL_NAME => Some(self.activate_tool_detail.clone()),
             CALL_TOOL_IN_EXTERNAL_MCP_NAME => Some(self.call_tool_in_external_mcp.clone()),
+            REQUEST_USER_INPUT_IN_POPUP_NAME => Some(self.request_user_input_in_popup.clone()),
             _ => None,
         }
     }
@@ -107,6 +113,14 @@ pub(super) fn call_tool_in_external_mcp_definition(name: &'static str) -> Tool {
             "required": ["external_mcp_name", "tool_name", "args_in_json"],
             "additionalProperties": false
         })),
+    )
+}
+
+pub(super) fn request_user_input_in_popup_definition() -> Tool {
+    Tool::new(
+        REQUEST_USER_INPUT_IN_POPUP_NAME,
+        "Open a centered popup dialog, collect one answer per question, append an Other option automatically, and return the selected or custom answers.",
+        object(popup_input_schema()),
     )
 }
 
