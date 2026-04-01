@@ -13,13 +13,16 @@ use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
 use tokio::net::UnixStream;
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 
 use crate::paths::{daemon_socket_path, validate_unix_socket_path};
 use crate::types::{CachedToolsetRecord, DaemonRequest, DaemonResponse, DaemonStatus};
 
 const DAEMON_READY_RETRIES: usize = 100;
 const DAEMON_RETRY_DELAY: Duration = Duration::from_millis(50);
+const DAEMON_SOCKET_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const DAEMON_SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+const DAEMON_CONTROL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub async fn run_daemon(
     config_path: &Path,
@@ -63,8 +66,10 @@ pub async fn request_exit(
     let response = send_request(
         &socket_path,
         &DaemonRequest::Exit,
+        "exit",
         Some(config_path),
         socket_override,
+        Some(DAEMON_CONTROL_RESPONSE_TIMEOUT),
     )
     .await?;
     match response {
@@ -113,8 +118,10 @@ pub async fn load_toolsets(
         &DaemonRequest::LoadToolsets {
             provider: provider_name.to_string(),
         },
+        "load_toolsets",
         Some(config_path),
         socket_override,
+        None,
     )
     .await?
     .ok_or_else(|| daemon_not_running_error(config_path, socket_override))?;
@@ -141,8 +148,10 @@ pub async fn call_tool(
             tool_name: tool_name.to_string(),
             arguments,
         },
+        "call_tool",
         Some(config_path),
         socket_override,
+        None,
     )
     .await?
     .ok_or_else(|| daemon_not_running_error(config_path, socket_override))?;
@@ -174,8 +183,10 @@ async fn probe_status(
     let response = send_request(
         &socket_path,
         &DaemonRequest::Status,
+        "status",
         Some(config_path),
         socket_override,
+        Some(DAEMON_CONTROL_RESPONSE_TIMEOUT),
     )
     .await?;
     match response {
@@ -189,29 +200,72 @@ async fn probe_status(
 async fn send_request(
     socket_path: &Path,
     request: &DaemonRequest,
+    request_name: &str,
     config_path: Option<&Path>,
     socket_override: Option<&Path>,
+    response_timeout: Option<Duration>,
 ) -> Result<Option<DaemonResponse>, Box<dyn Error>> {
-    let mut stream = match UnixStream::connect(socket_path).await {
-        Ok(stream) => stream,
-        Err(error) if is_stale_socket_error(error.kind()) => return Ok(None),
-        Err(error) => {
+    let mut stream = match timeout(
+        DAEMON_SOCKET_CONNECT_TIMEOUT,
+        UnixStream::connect(socket_path),
+    )
+    .await
+    {
+        Ok(Ok(stream)) => stream,
+        Ok(Err(error)) if is_stale_socket_error(error.kind()) => return Ok(None),
+        Ok(Err(error)) => {
             return Err(format!(
                 "failed to connect to daemon socket {}: {error}",
                 socket_path.display()
             )
             .into());
         }
+        Err(_) => {
+            return Err(daemon_unresponsive_error_path(
+                request_name,
+                config_path,
+                socket_override,
+                socket_path,
+            )
+            .into());
+        }
     };
 
     let payload = serde_json::to_string(request)?;
-    stream.write_all(payload.as_bytes()).await?;
-    stream.write_all(b"\n").await?;
-    stream.shutdown().await?;
+    timeout(
+        DAEMON_SOCKET_WRITE_TIMEOUT,
+        stream.write_all(payload.as_bytes()),
+    )
+    .await
+    .map_err(|_| {
+        daemon_unresponsive_error_path(request_name, config_path, socket_override, socket_path)
+    })??;
+    timeout(DAEMON_SOCKET_WRITE_TIMEOUT, stream.write_all(b"\n"))
+        .await
+        .map_err(|_| {
+            daemon_unresponsive_error_path(request_name, config_path, socket_override, socket_path)
+        })??;
+    timeout(DAEMON_SOCKET_WRITE_TIMEOUT, stream.shutdown())
+        .await
+        .map_err(|_| {
+            daemon_unresponsive_error_path(request_name, config_path, socket_override, socket_path)
+        })??;
 
     let mut reader = AsyncBufReader::new(stream);
     let mut response = String::new();
-    let bytes = reader.read_line(&mut response).await?;
+    let bytes = match response_timeout {
+        Some(duration) => timeout(duration, reader.read_line(&mut response))
+            .await
+            .map_err(|_| {
+                daemon_unresponsive_error_path(
+                    request_name,
+                    config_path,
+                    socket_override,
+                    socket_path,
+                )
+            })??,
+        None => reader.read_line(&mut response).await?,
+    };
     if bytes == 0 {
         return Err(
             daemon_not_running_error_path(config_path, socket_override, socket_path).into(),
@@ -478,6 +532,27 @@ fn daemon_not_running_error_path(
     }
 }
 
+fn daemon_unresponsive_error_path(
+    request_name: &str,
+    config_path: Option<&Path>,
+    socket_override: Option<&Path>,
+    socket_path: &Path,
+) -> String {
+    match (config_path, socket_override) {
+        (Some(config_path), _) => format!(
+            "daemon is unresponsive while handling {request_name} for config {} at {}",
+            config_path.display(),
+            socket_path.display()
+        ),
+        (None, Some(_)) | (None, None) => {
+            format!(
+                "daemon is unresponsive while handling {request_name} at {}",
+                socket_path.display()
+            )
+        }
+    }
+}
+
 struct CleanupGuard {
     path: PathBuf,
 }
@@ -497,6 +572,10 @@ impl Drop for CleanupGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use tokio::net::UnixListener;
+    use tokio::task::JoinHandle;
 
     #[test]
     fn daemon_pid_path_is_resolved_next_to_socket() {
@@ -524,5 +603,95 @@ mod tests {
             resolve_socket_path(Path::new("/tmp/config.toml"), Some(&socket_path)).unwrap_err();
 
         assert!(error.to_string().contains("unix socket path is too long"));
+    }
+
+    #[tokio::test]
+    async fn send_request_times_out_when_control_response_never_arrives() {
+        let response_timeout = Duration::from_millis(50);
+        let socket_path = unique_test_socket_path("timeout");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let accept_task = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(response_timeout + Duration::from_millis(50)).await;
+        });
+
+        let error = send_request(
+            &socket_path,
+            &DaemonRequest::Status,
+            "status",
+            Some(Path::new("/tmp/config.toml")),
+            None,
+            Some(response_timeout),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("daemon is unresponsive while handling status")
+        );
+
+        cleanup_test_socket(&socket_path, accept_task).await;
+    }
+
+    #[tokio::test]
+    async fn send_request_returns_status_response_when_daemon_replies() {
+        let response_timeout = Duration::from_millis(50);
+        let socket_path = unique_test_socket_path("status-ok");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let accept_task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let payload = serde_json::to_string(&DaemonResponse::Status {
+                status: DaemonStatus {
+                    version: "0.0.31".to_string(),
+                    pid: 42,
+                    socket_path: "/tmp/test.sock".to_string(),
+                    config_path: "/tmp/config.toml".to_string(),
+                },
+            })
+            .unwrap();
+            stream.write_all(payload.as_bytes()).await.unwrap();
+            stream.write_all(b"\n").await.unwrap();
+            stream.shutdown().await.unwrap();
+        });
+
+        let response = send_request(
+            &socket_path,
+            &DaemonRequest::Status,
+            "status",
+            Some(Path::new("/tmp/config.toml")),
+            None,
+            Some(response_timeout),
+        )
+        .await
+        .unwrap();
+
+        match response {
+            Some(DaemonResponse::Status { status }) => {
+                assert_eq!(status.pid, 42);
+                assert_eq!(status.socket_path, "/tmp/test.sock");
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+
+        cleanup_test_socket(&socket_path, accept_task).await;
+    }
+
+    fn unique_test_socket_path(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        PathBuf::from(format!(
+            "/tmp/msp-daemon-{label}-{}-{nonce}.sock",
+            std::process::id()
+        ))
+    }
+
+    async fn cleanup_test_socket(socket_path: &Path, accept_task: JoinHandle<()>) {
+        accept_task.abort();
+        let _ = accept_task.await;
+        let _ = fs::remove_file(socket_path);
     }
 }
