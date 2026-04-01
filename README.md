@@ -38,7 +38,7 @@ The default daemon socket lives under `~/.cache/mcp-smart-proxy/` and uses a sho
 - The `opencode` CLI when using `--provider opencode`
 - The `claude` CLI when using `--provider claude`
 - A browser session for remote MCP servers that require OAuth login
-- A desktop session when using popup input dialogs
+- A macOS desktop session when using popup input dialogs
 
 ## Install
 
@@ -237,6 +237,8 @@ msp input test
 ```
 
 The MCP tool `request_user_input_in_popup` is exposed only when the host starts `msp mcp --enable-input`. It uses the same GPUI-backed popup flow, always appends a final `Other` option, returns one answer per question, and returns an empty `answers` object when the user cancels or closes the dialog.
+
+Popup input dialogs are currently supported only on macOS. Linux builds do not include the GPUI popup feature, so they build cleanly in headless environments and ignore `msp mcp --enable-input`.
 
 On macOS, the GPUI popup build requires a full Xcode installation with the `metal` tool available through `xcrun`, not just Command Line Tools.
 

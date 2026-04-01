@@ -2,7 +2,7 @@
 
 - Use English for all code, comments, and documentation, to ensure that it is accessible to the widest possible audience.
 - Keep all usage of this project in README.md, update it as needed, and make sure it is clear and concise.
-- Before making any changes, present the plan (in the same language as user's input) to the user and ask the user for approving using any available request user input tool, or just ask the user to reply with "yes" or "no" in the console (when no input tool can be used).
+- Before making any changes, present the plan (in the same language as user's input) to the user and ask the user for approving using available request user input tool, or just ask the user to reply with "yes" or "no" in the console (when no input tool can be used).
 - Reduce complexity, during reading and editing the code, find complexity and try to reduce it.
 
 # Code edit
@@ -11,7 +11,7 @@
 - always make code clean, readable, and maintainable, avoid unnecessary complexity, avoid over-engineering, avoid duplicate code, and follow Rust best practices and idioms
 - when some function is not needed, don't hesitate to remove it, we can always add it back when we need it
 - the original code architecture and design may not be perfect, improve it when you see an opportunity, but don't try to redesign the whole codebase in one go, make incremental improvements and refactorings as you go
-- after editing, always run `cargo fmt` to ensure consistent code formatting, and `cargo clippy` to catch common mistakes and improve code quality, and `rust-analyzer diagnostics .` for language server diagnostics
+- after editing, always run `cargo fmt` to ensure consistent code formatting, and `cargo clippy` to catch common mistakes and improve code quality
 
 # Documentation
 
@@ -29,7 +29,7 @@
 - Keep self-update logic split by concern: version comparison, state-file persistence, binary installation, and runtime orchestration should not live in a single Rust module.
 - Keep local config record construction centralized: adding or importing a server should go through shared draft builders instead of duplicating transport-to-table conversion logic.
 - Keep MCP proxy logic split between cache loading, tool-schema helpers, downstream client lifecycle, and request dispatch so `src/mcp_server/` remains easy to extend without re-reading one large file.
-- Keep popup input logic split by concern: shared request/response types stay under `src/input_popup/`, the gpui UI stays in its own module, and CLI/MCP entrypoints should call the shared popup runner instead of duplicating dialog behavior.
+- Keep popup input logic split by concern: shared request/response types stay under `src/input_popup/`, the GPUI UI stays in its own macOS-only module, non-macOS targets return a clear unsupported error without linking GUI libraries, and CLI/MCP entrypoints should call the shared popup runner instead of duplicating dialog behavior.
 - Keep remote OAuth split by concern: generic OAuth discovery and token storage should stay reusable under `src/remote/oauth.rs`, while unsupported hosted endpoints should be rejected earlier by shared config-level remote URL validation.
 
 # Packages

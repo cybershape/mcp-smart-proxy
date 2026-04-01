@@ -12,8 +12,9 @@ use crate::config::{
     add_server, list_servers, load_config_table, load_server_config, remove_server,
     set_server_enabled, update_server_config,
 };
-use crate::console::{describe_command, operation_error, print_app_event};
+use crate::console::{describe_command, operation_error, print_app_event, print_app_warning};
 use crate::daemon;
+use crate::input_popup::popup_input_supported;
 use crate::mcp_server;
 use crate::paths::{expand_tilde, format_path_for_display};
 use crate::reload::reload_server_with_provider;
@@ -522,6 +523,15 @@ async fn run_mcp_command(
     provider_override: Option<ProviderName>,
     enable_input: bool,
 ) -> Result<(), Box<dyn Error>> {
+    let enable_input = if enable_input && !popup_input_supported() {
+        print_app_warning(
+            "cli.mcp.input_disabled",
+            "Popup input is available only on macOS. `msp mcp --enable-input` is ignored on this platform.",
+        );
+        false
+    } else {
+        enable_input
+    };
     let resolved_provider =
         resolve_default_command_provider(provider_override).map_err(|error| {
             operation_error(

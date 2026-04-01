@@ -122,7 +122,7 @@ pub(super) fn call_tool_in_external_mcp_definition(name: &'static str) -> Tool {
 pub(super) fn request_user_input_in_popup_definition() -> Tool {
     Tool::new(
         REQUEST_USER_INPUT_IN_POPUP_NAME,
-        "Open a centered popup dialog, collect one answer per question, append an Other option automatically, and return the selected or custom answers.",
+        "Request user input through a popup",
         object(popup_input_schema()),
     )
 }
