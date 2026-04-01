@@ -82,6 +82,29 @@ validate_version() {
   fi
 }
 
+push_tag_with_retry() {
+  local tag="$1"
+  local max_attempts="${2:-3}"
+  local delay_seconds="${3:-2}"
+  local attempt=1
+
+  while (( attempt <= max_attempts )); do
+    echo "pushing tag ${tag} (attempt ${attempt}/${max_attempts})"
+    if git push origin "${tag}"; then
+      return 0
+    fi
+
+    if (( attempt == max_attempts )); then
+      echo "failed to push tag ${tag} after ${max_attempts} attempts" >&2
+      return 1
+    fi
+
+    echo "push failed for ${tag}; retrying in ${delay_seconds}s" >&2
+    sleep "${delay_seconds}"
+    (( attempt += 1 ))
+  done
+}
+
 main() {
   cd "${repo_root}"
 
@@ -121,7 +144,7 @@ main() {
   git add Cargo.toml Cargo.lock
   git commit -m "release ${new_version}" -- Cargo.toml Cargo.lock
   git tag "v${new_version}"
-  git push origin "v${new_version}"
+  push_tag_with_retry "v${new_version}"
 }
 
 main "$@"
