@@ -22,6 +22,7 @@ struct ImportExecutionResult {
     imported_messages: Vec<String>,
     skipped_existing_servers: Vec<String>,
     skipped_self_servers: Vec<String>,
+    skipped_unsupported_servers: Vec<String>,
 }
 
 pub(super) async fn run_import_command(
@@ -219,6 +220,7 @@ async fn run_import_execution(
         imported_messages,
         skipped_existing_servers,
         skipped_self_servers: import_plan.skipped_self_servers,
+        skipped_unsupported_servers: import_plan.skipped_unsupported_servers,
     })
 }
 
@@ -326,6 +328,12 @@ fn print_import_details(stage: &'static str, result: &ImportExecutionResult) {
         print_app_event(
             &format!("{stage}.skipped"),
             format!("Skipped self-referential server `{name}`"),
+        );
+    }
+    for name in &result.skipped_unsupported_servers {
+        print_app_event(
+            &format!("{stage}.skipped"),
+            format!("Skipped unsupported hosted remote server `{name}`"),
         );
     }
 }

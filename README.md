@@ -204,10 +204,10 @@ Update a remote server:
 msp config remote-demo --url https://example.com/mcp --clear-headers --header Authorization='Bearer ${DEMO_TOKEN}'
 ```
 
-Forward OAuth app settings from your shell into one remote server:
+Forward one shell variable into a remote server config:
 
 ```bash
-msp config figma --env-var MSP_FIGMA_OAUTH_CLIENT_ID --env-var MSP_FIGMA_OAUTH_CLIENT_SECRET
+msp config remote-demo --env-var DEMO_TOKEN
 ```
 
 `msp config` can update `transport`, `enabled`, command or URL fields, headers, static env values, and forwarded env var names.
@@ -254,26 +254,23 @@ msp logout remote-demo
 
 OAuth metadata is discovered from the remote MCP server at runtime. Credentials are cached under `~/.cache/mcp-smart-proxy/oauth/`.
 
-#### Figma remote MCP server
+#### Unsupported Figma remote MCP server
 
-Figma's hosted MCP endpoint currently rejects generic OAuth dynamic client registration for third-party clients like `msp`. To use `https://mcp.figma.com/mcp` through `msp`, create a Figma OAuth app first and expose its client credentials through the server config.
+`msp` does not support Figma's hosted MCP endpoint at `https://mcp.figma.com/mcp`.
 
-Recommended setup:
+The proxy rejects that URL during `msp add`, `msp config --url`, and local config load with a clear error instead of letting setup continue into a broken OAuth flow.
+
+During `msp import ...` and `msp install ... --replace`, Figma hosted MCP entries are skipped for import and left in the original host config instead of being deleted.
 
 ```bash
-export MSP_FIGMA_OAUTH_CLIENT_ID=your-figma-oauth-client-id
-export MSP_FIGMA_OAUTH_CLIENT_SECRET=your-figma-oauth-client-secret
-msp config figma --env-var MSP_FIGMA_OAUTH_CLIENT_ID --env-var MSP_FIGMA_OAUTH_CLIENT_SECRET
-msp login figma
+msp add figma https://mcp.figma.com/mcp
 ```
 
-Register this redirect URI in the Figma OAuth app:
+Expected result:
 
 ```text
-http://127.0.0.1:33333/oauth/callback
+server `figma` uses unsupported remote MCP URL `https://mcp.figma.com/mcp`; msp does not support Figma's hosted MCP endpoint
 ```
-
-If that port does not work in your environment, override it with `MSP_FIGMA_OAUTH_REDIRECT_URI` and register the same URI in the Figma OAuth app before running `msp login figma`.
 
 ### Remove a server
 

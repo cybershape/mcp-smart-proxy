@@ -15,11 +15,15 @@ use super::{
 };
 
 mod lookup;
+mod remote_url;
 mod schema;
 mod update;
 
 pub(crate) use lookup::{
     has_server_name, resolve_server_name, resolved_server_table, resolved_server_table_mut,
+};
+pub(crate) use remote_url::{
+    is_unsupported_remote_server_url, validate_supported_remote_server_url,
 };
 pub(crate) use schema::{
     ParsedServerTransport, parse_remote_server_url, parse_server_enabled, parse_server_entry,
@@ -168,9 +172,9 @@ fn save_server(
     name: &str,
     server: ServerRecordDraft,
 ) -> Result<String, Box<dyn Error>> {
-    validate_new_server(&server)?;
     let mut config = load_config_table(config_path)?;
     let name = validate_new_server_name(&config, name)?;
+    validate_new_server(&server, &name)?;
     insert_server(&mut config, &name, server)?;
     save_config_table(config_path, &config)?;
 
@@ -352,11 +356,15 @@ fn insert_server(
     Ok(())
 }
 
-fn validate_new_server(server: &ServerRecordDraft) -> Result<(), Box<dyn Error>> {
+fn validate_new_server(server: &ServerRecordDraft, name: &str) -> Result<(), Box<dyn Error>> {
     if let ServerTransportDraft::Stdio(stdio_server) = &server.transport
         && is_self_server_command(&stdio_server.raw_command())
     {
         return Err("cannot add `msp mcp` as a managed server".into());
+    }
+
+    if let ServerTransportDraft::Remote { url, .. } = &server.transport {
+        validate_supported_remote_server_url(url, name)?;
     }
 
     Ok(())

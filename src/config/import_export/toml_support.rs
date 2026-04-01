@@ -14,6 +14,7 @@ use super::common::{
 type InspectTomlSelfServer = fn(&Table, &str) -> Option<(String, bool)>;
 type BuildTomlServerValue = fn(&StdioServer) -> Value;
 type FilterTomlServers = fn(&Table) -> Table;
+type PreserveTomlServer = fn(&Table) -> bool;
 type MergeTomlServersIntoBackup = fn(&Path, &Table) -> Result<(), Box<dyn Error>>;
 type RemoveTomlSelfServers = fn(&mut Table) -> Result<usize, Box<dyn Error>>;
 type MergeTomlServersIntoTarget = fn(&mut Table, &Table) -> Result<(), Box<dyn Error>>;
@@ -97,6 +98,7 @@ pub(super) fn replace_toml_mcp_servers_from_path(
     servers_key: &str,
     servers_error: &'static str,
     filter_backup_servers: FilterTomlServers,
+    preserve_server: PreserveTomlServer,
     merge_into_backup: MergeTomlServersIntoBackup,
 ) -> Result<super::super::ReplaceMcpServersResult, Box<dyn Error>> {
     let mut config = super::super::local::load_config_table(config_path)?;
@@ -107,10 +109,29 @@ pub(super) fn replace_toml_mcp_servers_from_path(
     };
     let backup_servers = filter_backup_servers(&existing_servers);
     let backup_path = crate::paths::sibling_backup_path(config_path, "msp-backup");
+    let removed_server_names = existing_servers
+        .iter()
+        .filter_map(|(name, value)| match value.as_table() {
+            Some(server) => (!preserve_server(server)).then_some(name.clone()),
+            None => Some(name.clone()),
+        })
+        .collect::<Vec<_>>();
 
     merge_into_backup(&backup_path, &backup_servers)?;
 
-    if config.remove(servers_key).is_some() {
+    if !removed_server_names.is_empty() {
+        let Some(servers_value) = config.get_mut(servers_key) else {
+            unreachable!("existing servers were loaded from this key");
+        };
+        let servers = servers_value
+            .as_table_mut()
+            .ok_or_else(|| servers_error.to_string())?;
+        for name in &removed_server_names {
+            servers.remove(name);
+        }
+        if servers.is_empty() {
+            config.remove(servers_key);
+        }
         super::super::local::save_config_table(config_path, &config)?;
     }
 
@@ -118,7 +139,7 @@ pub(super) fn replace_toml_mcp_servers_from_path(
         config_path,
         &backup_path,
         backup_servers.len(),
-        existing_servers.len(),
+        removed_server_names.len(),
     ))
 }
 

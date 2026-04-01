@@ -54,6 +54,7 @@ pub(crate) fn replace_codex_mcp_servers_from_path(
         "mcp_servers",
         "`mcp_servers` in Codex config must be a table",
         codex_backup_servers,
+        codex_preserve_server,
         merge_codex_servers_into_backup,
     )
 }
@@ -235,14 +236,25 @@ fn merge_codex_servers_into_backup(
 fn codex_backup_servers(servers: &Table) -> Table {
     servers
         .iter()
-        .filter(|(_, value)| {
-            value
-                .as_table()
-                .and_then(codex_server_raw_command)
-                .is_none_or(|raw_command| !super::super::is_self_server_command(&raw_command))
-        })
+        .filter(|(_, value)| value.as_table().is_some_and(codex_should_backup_server))
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect()
+}
+
+fn codex_should_backup_server(server: &Table) -> bool {
+    !server
+        .get("url")
+        .and_then(Value::as_str)
+        .is_some_and(super::super::local::is_unsupported_remote_server_url)
+        && codex_server_raw_command(server)
+            .is_none_or(|raw_command| !super::super::is_self_server_command(&raw_command))
+}
+
+fn codex_preserve_server(server: &Table) -> bool {
+    server
+        .get("url")
+        .and_then(Value::as_str)
+        .is_some_and(super::super::local::is_unsupported_remote_server_url)
 }
 
 fn merge_codex_servers_into_target(

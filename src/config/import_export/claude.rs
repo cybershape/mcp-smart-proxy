@@ -65,6 +65,7 @@ pub(crate) fn replace_claude_mcp_servers_from_path(
             servers_key: "mcpServers",
             servers_error: "`mcpServers` in Claude Code config must be an object",
             filter_backup_servers: claude_backup_servers,
+            preserve_server: claude_preserve_server,
             merge_into_backup: merge_claude_servers_into_backup,
         },
     )
@@ -240,14 +241,25 @@ fn merge_claude_servers_into_backup(
 fn claude_backup_servers(servers: &JsonMap<String, JsonValue>) -> JsonMap<String, JsonValue> {
     servers
         .iter()
-        .filter(|(_, value)| {
-            value
-                .as_object()
-                .and_then(claude_server_raw_command)
-                .is_none_or(|raw_command| !super::super::is_self_server_command(&raw_command))
-        })
+        .filter(|(_, value)| value.as_object().is_some_and(claude_should_backup_server))
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect()
+}
+
+fn claude_should_backup_server(server: &JsonMap<String, JsonValue>) -> bool {
+    !server
+        .get("url")
+        .and_then(JsonValue::as_str)
+        .is_some_and(super::super::local::is_unsupported_remote_server_url)
+        && claude_server_raw_command(server)
+            .is_none_or(|raw_command| !super::super::is_self_server_command(&raw_command))
+}
+
+fn claude_preserve_server(server: &JsonMap<String, JsonValue>) -> bool {
+    server
+        .get("url")
+        .and_then(JsonValue::as_str)
+        .is_some_and(super::super::local::is_unsupported_remote_server_url)
 }
 
 fn merge_claude_servers_into_target(

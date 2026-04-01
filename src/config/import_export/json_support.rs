@@ -19,6 +19,7 @@ type SaveJsonConfig = fn(&Path, &JsonValue) -> Result<(), Box<dyn Error>>;
 type InspectJsonSelfServer = fn(&JsonObject, &str) -> Option<(String, bool)>;
 type BuildJsonServerValue = fn(&StdioServer) -> JsonValue;
 type FilterJsonServers = fn(&JsonObject) -> JsonObject;
+type PreserveJsonServer = fn(&JsonObject) -> bool;
 type MergeJsonServersIntoBackup = fn(&Path, &JsonObject) -> Result<(), Box<dyn Error>>;
 type RemoveJsonSelfServers = fn(&mut JsonValue) -> Result<usize, Box<dyn Error>>;
 type MergeJsonServersIntoTarget = fn(&mut JsonValue, &JsonObject) -> Result<(), Box<dyn Error>>;
@@ -45,6 +46,7 @@ pub(super) struct JsonReplaceAdapter {
     pub(super) servers_key: &'static str,
     pub(super) servers_error: &'static str,
     pub(super) filter_backup_servers: FilterJsonServers,
+    pub(super) preserve_server: PreserveJsonServer,
     pub(super) merge_into_backup: MergeJsonServersIntoBackup,
 }
 
@@ -131,10 +133,29 @@ pub(super) fn replace_json_mcp_servers_from_path(
     };
     let backup_servers = (adapter.filter_backup_servers)(&existing_servers);
     let backup_path = crate::paths::sibling_backup_path(config_path, "msp-backup");
+    let removed_server_names = existing_servers
+        .iter()
+        .filter_map(|(name, value)| match value.as_object() {
+            Some(server) => (!(adapter.preserve_server)(server)).then_some(name.clone()),
+            None => Some(name.clone()),
+        })
+        .collect::<Vec<_>>();
 
     (adapter.merge_into_backup)(&backup_path, &backup_servers)?;
 
-    if root.remove(adapter.servers_key).is_some() {
+    if !removed_server_names.is_empty() {
+        let Some(servers_value) = root.get_mut(adapter.servers_key) else {
+            unreachable!("existing servers were loaded from this key");
+        };
+        let servers = servers_value
+            .as_object_mut()
+            .ok_or_else(|| adapter.servers_error.to_string())?;
+        for name in &removed_server_names {
+            servers.remove(name);
+        }
+        if servers.is_empty() {
+            root.remove(adapter.servers_key);
+        }
         (adapter.save_config)(config_path, &config)?;
     }
 
@@ -142,7 +163,7 @@ pub(super) fn replace_json_mcp_servers_from_path(
         config_path,
         &backup_path,
         backup_servers.len(),
-        existing_servers.len(),
+        removed_server_names.len(),
     ))
 }
 

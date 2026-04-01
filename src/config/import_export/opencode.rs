@@ -68,6 +68,7 @@ pub(crate) fn replace_opencode_mcp_servers_from_path(
             servers_key: "mcp",
             servers_error: "`mcp` in OpenCode config must be an object",
             filter_backup_servers: opencode_backup_servers,
+            preserve_server: opencode_preserve_server,
             merge_into_backup: merge_opencode_servers_into_backup,
         },
     )
@@ -250,14 +251,25 @@ fn merge_opencode_servers_into_backup(
 fn opencode_backup_servers(servers: &JsonMap<String, JsonValue>) -> JsonMap<String, JsonValue> {
     servers
         .iter()
-        .filter(|(_, value)| {
-            value
-                .as_object()
-                .and_then(opencode_server_raw_command)
-                .is_none_or(|raw_command| !super::super::is_self_server_command(&raw_command))
-        })
+        .filter(|(_, value)| value.as_object().is_some_and(opencode_should_backup_server))
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect()
+}
+
+fn opencode_should_backup_server(server: &JsonMap<String, JsonValue>) -> bool {
+    !server
+        .get("url")
+        .and_then(JsonValue::as_str)
+        .is_some_and(super::super::local::is_unsupported_remote_server_url)
+        && opencode_server_raw_command(server)
+            .is_none_or(|raw_command| !super::super::is_self_server_command(&raw_command))
+}
+
+fn opencode_preserve_server(server: &JsonMap<String, JsonValue>) -> bool {
+    server
+        .get("url")
+        .and_then(JsonValue::as_str)
+        .is_some_and(super::super::local::is_unsupported_remote_server_url)
 }
 
 fn merge_opencode_servers_into_target(

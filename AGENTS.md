@@ -30,7 +30,7 @@
 - Keep local config record construction centralized: adding or importing a server should go through shared draft builders instead of duplicating transport-to-table conversion logic.
 - Keep MCP proxy logic split between cache loading, tool-schema helpers, downstream client lifecycle, and request dispatch so `src/mcp_server/` remains easy to extend without re-reading one large file.
 - Keep popup input logic split by concern: shared request/response types stay under `src/input_popup/`, the iced UI stays in its own module, and CLI/MCP entrypoints should call the shared popup runner instead of duplicating dialog behavior.
-- Keep remote OAuth split by concern: generic OAuth discovery and token storage should stay reusable under `src/remote/oauth.rs`, while provider-specific exceptions such as Figma's pre-registered client fallback should live in dedicated helpers under `src/remote/`.
+- Keep remote OAuth split by concern: generic OAuth discovery and token storage should stay reusable under `src/remote/oauth.rs`, while unsupported hosted endpoints should be rejected earlier by shared config-level remote URL validation.
 
 # Packages
 

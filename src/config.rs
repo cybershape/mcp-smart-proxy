@@ -79,6 +79,7 @@ pub struct ListedServer {
 pub struct ImportPlan {
     pub servers: Vec<ImportableServer>,
     pub skipped_self_servers: Vec<String>,
+    pub skipped_unsupported_servers: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

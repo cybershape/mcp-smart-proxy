@@ -7,6 +7,12 @@ use crate::paths::format_path_for_display;
 
 use super::super::{ImportPlan, ImportableServer, ImportedServerDefinition};
 
+pub(super) enum ImportPlanServer {
+    Import(ImportableServer),
+    SkipSelf,
+    SkipUnsupported,
+}
+
 pub(super) enum InstallDecision {
     AlreadyInstalled {
         name: String,
@@ -88,24 +94,26 @@ pub(super) fn ensure_import_config_exists(
 
 pub(super) fn build_import_plan(
     mut names: Vec<String>,
-    mut load_server: impl FnMut(String) -> Result<Option<ImportableServer>, Box<dyn Error>>,
+    mut load_server: impl FnMut(String) -> Result<ImportPlanServer, Box<dyn Error>>,
 ) -> Result<ImportPlan, Box<dyn Error>> {
     names.sort();
 
     let mut importable_servers = Vec::new();
     let mut skipped_self_servers = Vec::new();
+    let mut skipped_unsupported_servers = Vec::new();
 
     for name in names {
-        if let Some(server) = load_server(name.clone())? {
-            importable_servers.push(server);
-        } else {
-            skipped_self_servers.push(name);
+        match load_server(name.clone())? {
+            ImportPlanServer::Import(server) => importable_servers.push(server),
+            ImportPlanServer::SkipSelf => skipped_self_servers.push(name),
+            ImportPlanServer::SkipUnsupported => skipped_unsupported_servers.push(name),
         }
     }
 
     Ok(ImportPlan {
         servers: importable_servers,
         skipped_self_servers,
+        skipped_unsupported_servers,
     })
 }
 
@@ -113,12 +121,20 @@ pub(super) fn importable_server_from_definition(
     name: String,
     imported: ImportedServerDefinition,
     enabled: bool,
-) -> Option<ImportableServer> {
+) -> ImportPlanServer {
     if imported.url.is_none() && super::super::is_self_server_command(&imported.command) {
-        return None;
+        return ImportPlanServer::SkipSelf;
     }
 
-    Some(ImportableServer {
+    if imported
+        .url
+        .as_deref()
+        .is_some_and(super::super::local::is_unsupported_remote_server_url)
+    {
+        return ImportPlanServer::SkipUnsupported;
+    }
+
+    ImportPlanServer::Import(ImportableServer {
         name,
         command: imported.command,
         url: imported.url,

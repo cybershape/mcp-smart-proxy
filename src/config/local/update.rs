@@ -8,7 +8,7 @@ use super::{
     UpdateServerConfig, load_config_table, load_server_config, looks_like_url, merge_env_vars,
     parse_remote_server_url, parse_toml_string_array, parse_toml_string_table,
     resolved_server_table_mut, resolved_server_transport, save_config_table, upsert_string_array,
-    upsert_string_table,
+    upsert_string_table, validate_supported_remote_server_url,
 };
 
 struct ServerTransportUpdate {
@@ -64,6 +64,7 @@ fn determine_next_transport(
             )
             .into());
         }
+        validate_supported_remote_server_url(url, resolved_name)?;
         "remote".to_string()
     } else if current_transport == "remote" && update.command.is_some() {
         "stdio".to_string()

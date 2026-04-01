@@ -3,7 +3,10 @@ use std::error::Error;
 
 use toml::{Table, Value};
 
-use super::{ServerConfigSnapshot, parse_toml_string_array, parse_toml_string_table};
+use super::{
+    ServerConfigSnapshot, parse_toml_string_array, parse_toml_string_table,
+    validate_supported_remote_server_url,
+};
 
 pub(crate) enum ParsedServerTransport {
     Stdio {
@@ -76,10 +79,12 @@ pub(crate) fn parse_remote_server_url<'a>(
     server: &'a Table,
     name: &str,
 ) -> Result<&'a str, Box<dyn Error>> {
-    server
+    let url = server
         .get("url")
         .and_then(Value::as_str)
-        .ok_or_else(|| format!("server `{name}` is missing `url`").into())
+        .ok_or_else(|| format!("server `{name}` is missing `url`"))?;
+    validate_supported_remote_server_url(url, name)?;
+    Ok(url)
 }
 
 pub(crate) fn server_config_snapshot(

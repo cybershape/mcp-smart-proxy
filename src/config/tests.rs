@@ -398,6 +398,46 @@ fn replace_codex_does_not_back_up_self_servers() {
 }
 
 #[test]
+fn replace_codex_preserves_unsupported_figma_server() {
+    let config_path = unique_test_path("codex-replace-preserves-figma.toml");
+    let backup_path = sibling_backup_path(&config_path, "msp-backup");
+    fs::write(
+        &config_path,
+        r#"
+                [mcp_servers.figma]
+                url = "https://mcp.figma.com/mcp"
+
+                [mcp_servers.alpha]
+                command = "npx"
+                args = ["-y", "alpha-server"]
+            "#,
+    )
+    .unwrap();
+
+    let replaced = replace_codex_mcp_servers_from_path(&config_path).unwrap();
+
+    assert_eq!(replaced.backed_up_server_count, 1);
+    assert_eq!(replaced.removed_server_count, 1);
+
+    let config = load_config_table(&config_path).unwrap();
+    let servers = config["mcp_servers"].as_table().unwrap();
+    assert_eq!(servers.len(), 1);
+    assert_eq!(
+        servers["figma"]["url"].as_str(),
+        Some("https://mcp.figma.com/mcp")
+    );
+
+    let backup = load_config_table(&backup_path).unwrap();
+    let servers = backup["mcp_servers"].as_table().unwrap();
+    assert_eq!(servers.len(), 1);
+    assert!(servers.get("figma").is_none());
+    assert_eq!(servers["alpha"]["command"].as_str(), Some("npx"));
+
+    fs::remove_file(config_path).unwrap();
+    fs::remove_file(backup_path).unwrap();
+}
+
+#[test]
 fn restore_codex_ignores_self_servers_present_in_backup() {
     let config_path = unique_test_path("codex-restore-filters-backup-self.toml");
     let backup_path = sibling_backup_path(&config_path, "msp-backup");
@@ -644,6 +684,50 @@ fn replace_opencode_does_not_back_up_self_servers() {
 }
 
 #[test]
+fn replace_opencode_preserves_unsupported_figma_server() {
+    let config_path = unique_test_path("opencode-replace-preserves-figma.json");
+    let backup_path = sibling_backup_path(&config_path, "msp-backup");
+    fs::write(
+        &config_path,
+        r#"{
+                "mcp": {
+                    "figma": {
+                        "type": "remote",
+                        "url": "https://mcp.figma.com/mcp"
+                    },
+                    "alpha": {
+                        "type": "local",
+                        "command": ["npx", "-y", "alpha-server"]
+                    }
+                }
+            }"#,
+    )
+    .unwrap();
+
+    let replaced = replace_opencode_mcp_servers_from_path(&config_path).unwrap();
+
+    assert_eq!(replaced.backed_up_server_count, 1);
+    assert_eq!(replaced.removed_server_count, 1);
+
+    let config = load_opencode_config(&config_path).unwrap();
+    let servers = config["mcp"].as_object().unwrap();
+    assert_eq!(servers.len(), 1);
+    assert_eq!(
+        servers["figma"]["url"].as_str(),
+        Some("https://mcp.figma.com/mcp")
+    );
+
+    let backup = load_opencode_config(&backup_path).unwrap();
+    let servers = backup["mcp"].as_object().unwrap();
+    assert_eq!(servers.len(), 1);
+    assert!(servers.get("figma").is_none());
+    assert!(servers.get("alpha").is_some());
+
+    fs::remove_file(config_path).unwrap();
+    fs::remove_file(backup_path).unwrap();
+}
+
+#[test]
 fn restore_opencode_ignores_self_servers_present_in_backup() {
     let config_path = unique_test_path("opencode-restore-filters-backup-self.json");
     let backup_path = sibling_backup_path(&config_path, "msp-backup");
@@ -852,6 +936,51 @@ fn replace_claude_does_not_back_up_self_servers() {
 }
 
 #[test]
+fn replace_claude_preserves_unsupported_figma_server() {
+    let config_path = unique_test_path("claude-replace-preserves-figma.json");
+    let backup_path = sibling_backup_path(&config_path, "msp-backup");
+    fs::write(
+        &config_path,
+        r#"{
+                "mcpServers": {
+                    "figma": {
+                        "type": "http",
+                        "url": "https://mcp.figma.com/mcp"
+                    },
+                    "alpha": {
+                        "type": "stdio",
+                        "command": "npx",
+                        "args": ["-y", "alpha-server"]
+                    }
+                }
+            }"#,
+    )
+    .unwrap();
+
+    let replaced = replace_claude_mcp_servers_from_path(&config_path).unwrap();
+
+    assert_eq!(replaced.backed_up_server_count, 1);
+    assert_eq!(replaced.removed_server_count, 1);
+
+    let config = load_claude_config(&config_path).unwrap();
+    let servers = config["mcpServers"].as_object().unwrap();
+    assert_eq!(servers.len(), 1);
+    assert_eq!(
+        servers["figma"]["url"].as_str(),
+        Some("https://mcp.figma.com/mcp")
+    );
+
+    let backup = load_claude_config(&backup_path).unwrap();
+    let servers = backup["mcpServers"].as_object().unwrap();
+    assert_eq!(servers.len(), 1);
+    assert!(servers.get("figma").is_none());
+    assert!(servers.get("alpha").is_some());
+
+    fs::remove_file(config_path).unwrap();
+    fs::remove_file(backup_path).unwrap();
+}
+
+#[test]
 fn restore_claude_ignores_self_servers_present_in_backup() {
     let config_path = unique_test_path("claude-restore-filters-backup-self.json");
     let backup_path = sibling_backup_path(&config_path, "msp-backup");
@@ -949,6 +1078,33 @@ fn loads_codex_servers_for_import_from_path() {
         ]
     );
     assert!(plan.skipped_self_servers.is_empty());
+    assert!(plan.skipped_unsupported_servers.is_empty());
+
+    fs::remove_file(config_path).unwrap();
+}
+
+#[test]
+fn skips_unsupported_figma_server_when_loading_codex_import_plan() {
+    let config_path = unique_test_path("codex-import-unsupported-figma.toml");
+    fs::write(
+        &config_path,
+        r#"
+                [mcp_servers.figma]
+                url = "https://mcp.figma.com/mcp"
+
+                [mcp_servers.github]
+                command = "npx"
+                args = ["-y", "@modelcontextprotocol/server-github"]
+            "#,
+    )
+    .unwrap();
+
+    let plan = load_codex_servers_for_import_from_path(&config_path).unwrap();
+
+    assert_eq!(plan.servers.len(), 1);
+    assert_eq!(plan.servers[0].name, "github");
+    assert!(plan.skipped_self_servers.is_empty());
+    assert_eq!(plan.skipped_unsupported_servers, vec!["figma".to_string()]);
 
     fs::remove_file(config_path).unwrap();
 }
@@ -1161,6 +1317,37 @@ fn loads_opencode_servers_for_import_from_path() {
         ]
     );
     assert!(plan.skipped_self_servers.is_empty());
+    assert!(plan.skipped_unsupported_servers.is_empty());
+
+    fs::remove_file(config_path).unwrap();
+}
+
+#[test]
+fn skips_unsupported_figma_server_when_loading_opencode_import_plan() {
+    let config_path = unique_test_path("opencode-import-unsupported-figma.json");
+    fs::write(
+        &config_path,
+        r#"{
+                "mcp": {
+                    "figma": {
+                        "type": "remote",
+                        "url": "https://mcp.figma.com/mcp"
+                    },
+                    "github": {
+                        "type": "local",
+                        "command": ["npx", "-y", "@modelcontextprotocol/server-github"]
+                    }
+                }
+            }"#,
+    )
+    .unwrap();
+
+    let plan = load_opencode_servers_for_import_from_path(&config_path).unwrap();
+
+    assert_eq!(plan.servers.len(), 1);
+    assert_eq!(plan.servers[0].name, "github");
+    assert!(plan.skipped_self_servers.is_empty());
+    assert_eq!(plan.skipped_unsupported_servers, vec!["figma".to_string()]);
 
     fs::remove_file(config_path).unwrap();
 }
@@ -1536,6 +1723,36 @@ fn rejects_claude_import_when_server_uses_unsupported_fields() {
 }
 
 #[test]
+fn skips_unsupported_figma_server_when_loading_claude_import_plan() {
+    let config_path = unique_test_path("claude-import-unsupported-figma.json");
+    fs::write(
+        &config_path,
+        r#"{
+                "mcpServers": {
+                    "figma": {
+                        "type": "http",
+                        "url": "https://mcp.figma.com/mcp"
+                    },
+                    "github": {
+                        "command": "npx",
+                        "args": ["-y", "@modelcontextprotocol/server-github"]
+                    }
+                }
+            }"#,
+    )
+    .unwrap();
+
+    let plan = load_claude_servers_for_import_from_path(&config_path).unwrap();
+
+    assert_eq!(plan.servers.len(), 1);
+    assert_eq!(plan.servers[0].name, "github");
+    assert!(plan.skipped_self_servers.is_empty());
+    assert_eq!(plan.skipped_unsupported_servers, vec!["figma".to_string()]);
+
+    fs::remove_file(config_path).unwrap();
+}
+
+#[test]
 fn skips_self_server_when_loading_claude_import_plan() {
     let config_path = unique_test_path("claude-import-self.json");
     fs::write(
@@ -1575,6 +1792,7 @@ fn skips_self_server_when_loading_claude_import_plan() {
         }]
     );
     assert_eq!(plan.skipped_self_servers, vec!["proxy".to_string()]);
+    assert!(plan.skipped_unsupported_servers.is_empty());
 
     fs::remove_file(config_path).unwrap();
 }
@@ -1633,6 +1851,7 @@ fn skips_self_server_when_loading_codex_import_plan() {
         }]
     );
     assert_eq!(plan.skipped_self_servers, vec!["proxy".to_string()]);
+    assert!(plan.skipped_unsupported_servers.is_empty());
 
     fs::remove_file(config_path).unwrap();
 }
@@ -1720,6 +1939,23 @@ fn writes_remote_url_server_to_config() {
     assert!(saved.get("args").is_none());
 
     fs::remove_file(config_path).unwrap();
+}
+
+#[test]
+fn rejects_unsupported_figma_remote_url_when_adding_server() {
+    let config_path = unique_test_path("reject-figma-remote-add.toml");
+    let error = add_server(
+        &config_path,
+        "figma",
+        vec!["https://mcp.figma.com/mcp".to_string()],
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "server `figma` uses unsupported remote MCP URL `https://mcp.figma.com/mcp`; msp does not support Figma's hosted MCP endpoint"
+    );
+    assert!(!config_path.exists());
 }
 
 #[test]
@@ -1937,6 +2173,60 @@ fn implicit_transport_switch_removes_stale_transport_override() {
     assert!(saved.get("transport").is_none());
     assert_eq!(saved["url"].as_str(), Some("https://example.com/mcp"));
     assert!(saved.get("command").is_none());
+
+    fs::remove_file(config_path).unwrap();
+}
+
+#[test]
+fn rejects_unsupported_figma_remote_url_when_updating_server() {
+    let config_path = unique_test_path("update-figma-remote-config.toml");
+    fs::write(
+        &config_path,
+        r#"
+                [servers.demo]
+                transport = "stdio"
+                command = "npx"
+                args = ["-y", "demo-server"]
+            "#,
+    )
+    .unwrap();
+
+    let error = update_server_config(
+        &config_path,
+        "demo",
+        &UpdateServerConfig {
+            url: Some("https://mcp.figma.com/mcp".to_string()),
+            ..UpdateServerConfig::default()
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "server `demo` uses unsupported remote MCP URL `https://mcp.figma.com/mcp`; msp does not support Figma's hosted MCP endpoint"
+    );
+
+    fs::remove_file(config_path).unwrap();
+}
+
+#[test]
+fn rejects_unsupported_figma_remote_url_when_loading_config() {
+    let config_path = unique_test_path("load-figma-remote-config.toml");
+    fs::write(
+        &config_path,
+        r#"
+                [servers.figma]
+                url = "https://mcp.figma.com/mcp"
+            "#,
+    )
+    .unwrap();
+
+    let error = load_server_config(&config_path, "figma").unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "server `figma` uses unsupported remote MCP URL `https://mcp.figma.com/mcp`; msp does not support Figma's hosted MCP endpoint"
+    );
 
     fs::remove_file(config_path).unwrap();
 }
