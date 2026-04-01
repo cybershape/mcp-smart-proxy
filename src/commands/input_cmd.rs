@@ -61,29 +61,34 @@ fn sample_request() -> PopupInputRequest {
         questions: vec![
             PopupQuestion {
                 id: "delivery_strategy".to_string(),
-                question: "这次运行应当采用哪种交付策略？".to_string(),
+                question: "Which delivery strategy should this run use?".to_string(),
                 options: vec![
                     PopupOption {
-                        label: "快速路径".to_string(),
-                        description: "优先选择最快方案，并接受较窄的检查范围。".to_string(),
+                        label: "Fast path".to_string(),
+                        description:
+                            "Prefer the quickest option and accept a narrower validation scope."
+                                .to_string(),
                     },
                     PopupOption {
-                        label: "平衡方案".to_string(),
-                        description: "用少量速度换取更稳妥的校验和默认行为。".to_string(),
+                        label: "Balanced".to_string(),
+                        description: "Trade a little speed for safer checks and steadier defaults."
+                            .to_string(),
                     },
                 ],
             },
             PopupQuestion {
                 id: "summary_style".to_string(),
-                question: "最终结果应当如何总结？".to_string(),
+                question: "How should the final result be summarized?".to_string(),
                 options: vec![
                     PopupOption {
-                        label: "简短说明".to_string(),
-                        description: "返回一段紧凑的说明，只保留最关键的信息。".to_string(),
+                        label: "Short note".to_string(),
+                        description:
+                            "Return one compact explanation with only the most important details."
+                                .to_string(),
                     },
                     PopupOption {
-                        label: "检查清单".to_string(),
-                        description: "返回便于快速浏览的扁平条目列表。".to_string(),
+                        label: "Checklist".to_string(),
+                        description: "Return a flat list that is easy to scan quickly.".to_string(),
                     },
                 ],
             },

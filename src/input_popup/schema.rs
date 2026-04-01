@@ -52,6 +52,7 @@ impl PopupInputResponse {
         Self::default()
     }
 
+    #[cfg(test)]
     pub fn from_answers(answers: impl IntoIterator<Item = (String, String)>) -> Self {
         Self {
             answers: answers

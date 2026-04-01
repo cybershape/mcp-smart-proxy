@@ -236,11 +236,13 @@ Open a sample popup dialog locally:
 msp input test
 ```
 
-The MCP tool `request_user_input_in_popup` is exposed only when the host starts `msp mcp --enable-input`. It uses the same GPUI-backed popup flow, always appends a final `Other` option, returns one answer per question, and returns an empty `answers` object when the user cancels or closes the dialog.
+The MCP tool `request_user_input_in_popup` is exposed only when the host starts `msp mcp --enable-input`. On macOS it uses an embedded Swift/AppKit helper, always appends a final `Other` option, returns one answer per question, and returns an empty `answers` object when the user cancels or closes the dialog.
 
-Popup input dialogs are currently supported only on macOS. Linux builds do not include the GPUI popup feature, so they build cleanly in headless environments and ignore `msp mcp --enable-input`.
+The released `msp` binary still ships as a single executable. On macOS, `msp` extracts the embedded popup helper into `~/.cache/mcp-smart-proxy/popup-input/` on first use and reuses it for later dialogs.
 
-On macOS, the GPUI popup build requires a full Xcode installation with the `metal` tool available through `xcrun`, not just Command Line Tools.
+Popup input dialogs are currently supported only on macOS. Linux builds do not include the popup helper, so they build cleanly in headless environments and ignore `msp mcp --enable-input`.
+
+When building from source on macOS, popup input requires `xcrun swiftc` so Cargo can compile the helper during the build.
 
 ### Log in or out of a remote server
 

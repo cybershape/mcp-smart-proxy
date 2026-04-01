@@ -1,22 +1,22 @@
+#[cfg(target_os = "macos")]
+mod macos;
 mod runner;
 mod schema;
-#[cfg(target_os = "macos")]
-mod ui;
 #[cfg(not(target_os = "macos"))]
 mod ui_stub;
 
 use std::error::Error;
 use std::io::Read;
 
+#[cfg(target_os = "macos")]
+pub use macos::show_popup_dialog;
 pub use runner::request_user_input_in_popup;
 pub use schema::{PopupInputRequest, PopupOption, PopupQuestion};
-#[cfg(target_os = "macos")]
-pub use ui::show_popup_dialog;
 #[cfg(not(target_os = "macos"))]
 pub use ui_stub::show_popup_dialog;
 
 #[cfg(not(target_os = "macos"))]
-pub const POPUP_INPUT_UNSUPPORTED_MESSAGE: &str = "popup input dialogs are available only on macOS; this build does not include the GUI popup feature";
+pub const POPUP_INPUT_UNSUPPORTED_MESSAGE: &str = "popup input dialogs are available only on macOS; this build does not include the Swift popup helper";
 
 pub fn popup_input_schema() -> serde_json::Value {
     serde_json::json!({
