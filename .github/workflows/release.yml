@@ -1,12 +1,9 @@
-name: Build and Release
+name: Release
 
 on:
   push:
-    branches:
-      - main
     tags:
       - "v*"
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -30,12 +27,6 @@ jobs:
         with:
           targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
 
-      - name: Cache cargo files
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: release-linux
-          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
-
       - name: Install Linux cross toolchain
         run: |
           sudo apt-get update
@@ -50,7 +41,6 @@ jobs:
           cargo build --release --locked --bin "${BINARY_NAME}" --target aarch64-unknown-linux-gnu
 
       - name: Package Linux archives
-        if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
           set -euo pipefail
@@ -64,7 +54,6 @@ jobs:
           done
 
       - name: Upload Linux packaged artifacts
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v6
         with:
           name: ${{ env.BINARY_NAME }}-${{ github.ref_name }}-linux
@@ -85,12 +74,6 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-      - name: Cache cargo files
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: release-macos
-          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
-
       - name: Build macOS release binaries
         run: |
           set -euo pipefail
@@ -98,7 +81,6 @@ jobs:
           cargo build --release --locked --bin "${BINARY_NAME}" --target x86_64-apple-darwin
 
       - name: Package macOS archives
-        if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
           set -euo pipefail
@@ -112,7 +94,6 @@ jobs:
           done
 
       - name: Upload macOS packaged artifacts
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v6
         with:
           name: ${{ env.BINARY_NAME }}-${{ github.ref_name }}-macos
@@ -123,7 +104,6 @@ jobs:
   release:
     name: Publish release
     runs-on: ubuntu-24.04
-    if: startsWith(github.ref, 'refs/tags/v')
     needs:
       - build-linux
       - build-macos
