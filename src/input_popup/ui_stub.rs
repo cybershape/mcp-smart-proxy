@@ -2,7 +2,8 @@ use std::error::Error;
 
 use crate::console::message_error;
 
-use super::{POPUP_INPUT_UNSUPPORTED_MESSAGE, PopupInputRequest, PopupInputResponse};
+use super::schema::PopupInputResponse;
+use super::{POPUP_INPUT_UNSUPPORTED_MESSAGE, PopupInputRequest};
 
 pub fn show_popup_dialog(
     _request: PopupInputRequest,
