@@ -318,7 +318,9 @@ All three commands also accept `--socket <path>` when you need to target a custo
 
 Keep custom socket paths short enough for Unix domain socket limits.
 
-If the daemon socket accepts a connection but never replies, `msp daemon status`, `stop`, and `restart` now fail quickly with a clear "daemon is unresponsive" error instead of hanging indefinitely.
+The daemon writes a runtime log next to its socket, for example `~/.cache/mcp-smart-proxy/msp-<scope>.sock.log`.
+
+If the daemon socket accepts a connection but never replies, `msp daemon status`, `stop`, and `restart` fail quickly with a clear "daemon is unresponsive" error that points to the daemon log file instead of hanging indefinitely.
 
 ## Install Into a Host
 

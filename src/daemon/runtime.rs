@@ -4,7 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use rmcp::{RoleClient, model::CallToolRequestParams, service::RunningService};
@@ -12,6 +12,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, watch};
 
+use super::logging::DaemonLogger;
 use crate::config::{
     configured_server, list_servers, load_config_table, load_model_provider_config,
 };
@@ -32,42 +33,70 @@ pub(crate) async fn serve_daemon(
     listener: UnixListener,
     config_path: PathBuf,
     socket_path: PathBuf,
+    logger: DaemonLogger,
 ) -> Result<(), Box<dyn Error>> {
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let state = Arc::new(DaemonState {
         config_path,
         socket_path,
+        logger,
         registry: ClientRegistry::default(),
+        next_request_id: AtomicU64::new(1),
         active_requests: AtomicUsize::new(0),
         last_activity: StdMutex::new(Instant::now()),
         shutdown_tx,
     });
     let mut idle_interval = tokio::time::interval(IDLE_POLL_INTERVAL);
+    state.logger.info(
+        "daemon.listen",
+        format!(
+            "daemon listening on {} for {}",
+            state.socket_path.display(),
+            state.config_path.display()
+        ),
+    );
 
     loop {
         tokio::select! {
             result = listener.accept() => {
-                let (stream, _) = result?;
-                let state = Arc::clone(&state);
-                tokio::spawn(async move {
-                    if let Err(error) = handle_connection(stream, state).await {
-                        eprintln!("warning: daemon request failed: {error}");
+                let (stream, _) = match result {
+                    Ok(result) => result,
+                    Err(error) => {
+                        state.logger.error("daemon.accept_failed", error.to_string());
+                        return Err(Box::new(error));
                     }
+                };
+                let state = Arc::clone(&state);
+                let request_id = state.next_request_id.fetch_add(1, Ordering::SeqCst);
+                state.logger.info(
+                    "daemon.accepted",
+                    format!("request_id={request_id} active_requests={}", state.active_requests.load(Ordering::SeqCst)),
+                );
+                tokio::spawn(async move {
+                    let _ = handle_connection(stream, state, request_id).await;
                 });
             }
             _ = idle_interval.tick() => {
                 if state.should_exit_for_idle() {
+                    state.logger.info("daemon.idle_exit", "daemon exited after idle timeout");
                     return Ok(());
                 }
             }
             result = shutdown_rx.changed() => {
-                result.map_err(|error| format!("failed to observe daemon shutdown: {error}"))?;
+                result.map_err(|error| {
+                    state.logger.error("daemon.shutdown_watch_failed", error.to_string());
+                    format!("failed to observe daemon shutdown: {error}")
+                })?;
                 if *shutdown_rx.borrow() {
+                    state.logger.info("daemon.shutdown_requested", "shutdown requested by daemon client");
                     return Ok(());
                 }
             }
             result = shutdown_signal() => {
-                result?;
+                result.inspect_err(|error| {
+                    state.logger.error("daemon.signal_failed", error.to_string());
+                })?;
+                state.logger.info("daemon.signal_exit", "shutdown signal received");
                 let _ = state.shutdown_tx.send(true);
                 return Ok(());
             }
@@ -78,7 +107,9 @@ pub(crate) async fn serve_daemon(
 struct DaemonState {
     config_path: PathBuf,
     socket_path: PathBuf,
+    logger: DaemonLogger,
     registry: ClientRegistry,
+    next_request_id: AtomicU64,
     active_requests: AtomicUsize,
     last_activity: StdMutex<Instant>,
     shutdown_tx: watch::Sender<bool>,
@@ -102,30 +133,57 @@ impl DaemonState {
 async fn handle_connection(
     stream: UnixStream,
     state: Arc<DaemonState>,
+    request_id: u64,
 ) -> Result<(), Box<dyn Error>> {
     state.active_requests.fetch_add(1, Ordering::SeqCst);
     state.touch();
+    let started_at = Instant::now();
 
-    let result = handle_connection_inner(stream, Arc::clone(&state)).await;
+    let result = handle_connection_inner(stream, Arc::clone(&state), request_id).await;
 
     state.touch();
-    state.active_requests.fetch_sub(1, Ordering::SeqCst);
+    let active_requests = state.active_requests.fetch_sub(1, Ordering::SeqCst) - 1;
+    match &result {
+        Ok(()) => state.logger.info(
+            "daemon.request_finished",
+            format!(
+                "request_id={request_id} elapsed_ms={} active_requests={active_requests}",
+                started_at.elapsed().as_millis()
+            ),
+        ),
+        Err(error) => state.logger.error(
+            "daemon.request_failed",
+            format!(
+                "request_id={request_id} elapsed_ms={} active_requests={active_requests} error={error}",
+                started_at.elapsed().as_millis()
+            ),
+        ),
+    }
     result
 }
 
 async fn handle_connection_inner(
     stream: UnixStream,
     state: Arc<DaemonState>,
+    request_id: u64,
 ) -> Result<(), Box<dyn Error>> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
     let bytes = reader.read_line(&mut line).await?;
     if bytes == 0 {
+        state
+            .logger
+            .info("daemon.empty_request", format!("request_id={request_id}"));
         return Ok(());
     }
 
     let request: DaemonRequest = serde_json::from_str(line.trim())?;
+    let request_name = daemon_request_name(&request);
+    state.logger.info(
+        "daemon.request_received",
+        format!("request_id={request_id} type={request_name}"),
+    );
     let response = match request {
         DaemonRequest::Status => DaemonResponse::Status {
             status: DaemonStatus {
@@ -158,11 +216,18 @@ async fn handle_connection_inner(
             },
         },
     };
+    let response_name = daemon_response_name(&response);
 
     let payload = serde_json::to_string(&response)?;
     writer.write_all(payload.as_bytes()).await?;
     writer.write_all(b"\n").await?;
     writer.shutdown().await?;
+    state.logger.info(
+        "daemon.response_sent",
+        format!(
+            "request_id={request_id} request_type={request_name} response_type={response_name}"
+        ),
+    );
     Ok(())
 }
 
@@ -320,5 +385,24 @@ async fn shutdown_signal() -> io::Result<()> {
     tokio::select! {
         result = tokio::signal::ctrl_c() => result,
         _ = terminate.recv() => Ok(()),
+    }
+}
+
+fn daemon_request_name(request: &DaemonRequest) -> &'static str {
+    match request {
+        DaemonRequest::Status => "status",
+        DaemonRequest::Exit => "exit",
+        DaemonRequest::LoadToolsets { .. } => "load_toolsets",
+        DaemonRequest::CallTool { .. } => "call_tool",
+    }
+}
+
+fn daemon_response_name(response: &DaemonResponse) -> &'static str {
+    match response {
+        DaemonResponse::Status { .. } => "status",
+        DaemonResponse::ExitAck => "exit_ack",
+        DaemonResponse::Toolsets { .. } => "toolsets",
+        DaemonResponse::ToolResult { .. } => "tool_result",
+        DaemonResponse::Error { .. } => "error",
     }
 }

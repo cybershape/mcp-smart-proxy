@@ -1,3 +1,4 @@
+mod logging;
 mod runtime;
 
 use std::error::Error;
@@ -15,6 +16,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
 use tokio::net::UnixStream;
 use tokio::time::{sleep, timeout};
 
+use self::logging::DaemonLogger;
 use crate::paths::{daemon_socket_path, validate_unix_socket_path};
 use crate::types::{CachedToolsetRecord, DaemonRequest, DaemonResponse, DaemonStatus};
 
@@ -33,10 +35,21 @@ pub async fn run_daemon(
     let _pid_guard = claim_daemon_pid(&socket_path, &pid_path)?;
 
     prepare_socket_path(&socket_path)?;
+    let logger = DaemonLogger::open(daemon_log_path(&socket_path)?)?;
+    logger.info(
+        "daemon.start",
+        format!(
+            "pid={} socket={} config={} log={}",
+            std::process::id(),
+            socket_path.display(),
+            config_path.display(),
+            logger.path().display()
+        ),
+    );
     let listener = tokio::net::UnixListener::bind(&socket_path)?;
     let _socket_guard = CleanupGuard::new(socket_path.clone());
 
-    runtime::serve_daemon(listener, config_path.to_path_buf(), socket_path).await
+    runtime::serve_daemon(listener, config_path.to_path_buf(), socket_path, logger).await
 }
 
 pub async fn ensure_daemon_running(
@@ -363,6 +376,10 @@ fn startup_log_path(socket_path: &Path) -> Result<PathBuf, Box<dyn Error>> {
     socket_sibling_path(socket_path, "startup.log")
 }
 
+fn daemon_log_path(socket_path: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    socket_sibling_path(socket_path, "log")
+}
+
 fn socket_sibling_path(socket_path: &Path, suffix: &str) -> Result<PathBuf, Box<dyn Error>> {
     let file_name = socket_path
         .file_name()
@@ -538,16 +555,21 @@ fn daemon_unresponsive_error_path(
     socket_override: Option<&Path>,
     socket_path: &Path,
 ) -> String {
+    let log_hint = daemon_log_path(socket_path)
+        .map(|path| format!("; check daemon log at {}", path.display()))
+        .unwrap_or_default();
     match (config_path, socket_override) {
         (Some(config_path), _) => format!(
-            "daemon is unresponsive while handling {request_name} for config {} at {}",
+            "daemon is unresponsive while handling {request_name} for config {} at {}{}",
             config_path.display(),
-            socket_path.display()
+            socket_path.display(),
+            log_hint
         ),
         (None, Some(_)) | (None, None) => {
             format!(
-                "daemon is unresponsive while handling {request_name} at {}",
-                socket_path.display()
+                "daemon is unresponsive while handling {request_name} at {}{}",
+                socket_path.display(),
+                log_hint
             )
         }
     }
@@ -605,6 +627,12 @@ mod tests {
         assert!(error.to_string().contains("unix socket path is too long"));
     }
 
+    #[test]
+    fn daemon_log_path_is_resolved_next_to_socket() {
+        let path = daemon_log_path(Path::new("/tmp/msp.sock")).unwrap();
+        assert_eq!(path, PathBuf::from("/tmp/msp.sock.log"));
+    }
+
     #[tokio::test]
     async fn send_request_times_out_when_control_response_never_arrives() {
         let response_timeout = Duration::from_millis(50);
@@ -626,11 +654,9 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(
-            error
-                .to_string()
-                .contains("daemon is unresponsive while handling status")
-        );
+        let error_text = error.to_string();
+        assert!(error_text.contains("daemon is unresponsive while handling status"));
+        assert!(error_text.contains("check daemon log at"));
 
         cleanup_test_socket(&socket_path, accept_task).await;
     }

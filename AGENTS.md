@@ -26,6 +26,7 @@
 - Keep `msp mcp` on a daemon/client split: the foreground `msp mcp` process should stay a thin stdio MCP facade, while the shared daemon owns downstream MCP communication, socket lifecycle, idle shutdown, and background self-update work.
 - Keep daemon management semantics centralized in `src/daemon/`: user-facing commands such as `msp daemon status|stop|restart` should stay thin wrappers over shared lifecycle helpers instead of duplicating socket/process control in CLI dispatch.
 - Keep daemon control requests fail-fast: status/stop/restart probes should use short client-side timeouts and report an unresponsive daemon clearly instead of hanging forever when a socket accepts but never replies.
+- Keep daemon observability centralized in `src/daemon/`: runtime lifecycle and request logs should be written to a stable file next to the socket so unresponsive or stuck daemons can be diagnosed after detached startup.
 - Keep daemon socket naming short and stable: store the default socket directly under `~/.cache/mcp-smart-proxy/`, derive its file name from a compact config-path hash, and validate Unix socket path length before bind/connect so both default and overridden paths fail early with clear errors.
 - Keep self-update logic split by concern: version comparison, state-file persistence, binary installation, and runtime orchestration should not live in a single Rust module.
 - Keep local config record construction centralized: adding or importing a server should go through shared draft builders instead of duplicating transport-to-table conversion logic.
