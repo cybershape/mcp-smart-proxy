@@ -228,7 +228,10 @@ mod tests {
 
         let path = daemon_socket_path_from_home(&home, config_path).unwrap();
 
-        assert_eq!(path.parent(), Some(home.join(".cache/mcp-smart-proxy").as_path()));
+        assert_eq!(
+            path.parent(),
+            Some(home.join(".cache/mcp-smart-proxy").as_path())
+        );
         assert_eq!(
             path.file_name().and_then(|value| value.to_str()),
             Some("msp-b032d3b59a0440c2.sock")

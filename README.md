@@ -204,6 +204,12 @@ Update a remote server:
 msp config remote-demo --url https://example.com/mcp --clear-headers --header Authorization='Bearer ${DEMO_TOKEN}'
 ```
 
+Forward OAuth app settings from your shell into one remote server:
+
+```bash
+msp config figma --env-var MSP_FIGMA_OAUTH_CLIENT_ID --env-var MSP_FIGMA_OAUTH_CLIENT_SECRET
+```
+
 `msp config` can update `transport`, `enabled`, command or URL fields, headers, static env values, and forwarded env var names.
 
 ### Reload cached tools
@@ -247,6 +253,27 @@ msp logout remote-demo
 ```
 
 OAuth metadata is discovered from the remote MCP server at runtime. Credentials are cached under `~/.cache/mcp-smart-proxy/oauth/`.
+
+#### Figma remote MCP server
+
+Figma's hosted MCP endpoint currently rejects generic OAuth dynamic client registration for third-party clients like `msp`. To use `https://mcp.figma.com/mcp` through `msp`, create a Figma OAuth app first and expose its client credentials through the server config.
+
+Recommended setup:
+
+```bash
+export MSP_FIGMA_OAUTH_CLIENT_ID=your-figma-oauth-client-id
+export MSP_FIGMA_OAUTH_CLIENT_SECRET=your-figma-oauth-client-secret
+msp config figma --env-var MSP_FIGMA_OAUTH_CLIENT_ID --env-var MSP_FIGMA_OAUTH_CLIENT_SECRET
+msp login figma
+```
+
+Register this redirect URI in the Figma OAuth app:
+
+```text
+http://127.0.0.1:33333/oauth/callback
+```
+
+If that port does not work in your environment, override it with `MSP_FIGMA_OAUTH_REDIRECT_URI` and register the same URI in the Figma OAuth app before running `msp login figma`.
 
 ### Remove a server
 

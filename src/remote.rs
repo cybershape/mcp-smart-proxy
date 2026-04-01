@@ -29,6 +29,7 @@ use crate::paths::oauth_credentials_path;
 use crate::types::ConfiguredServer;
 
 mod callback;
+mod figma;
 mod headers;
 mod oauth;
 mod store;
@@ -46,7 +47,7 @@ pub async fn connect_remote_client(
     server: &ConfiguredServer,
 ) -> Result<RunningService<RoleClient, ()>, Box<dyn Error>> {
     let remote = remote_target(server)?;
-    let auth = RemoteAuth::new(server_name, &remote.url).await?;
+    let auth = RemoteAuth::new(server_name, &remote.url, &server.resolved_env_map()).await?;
     let client = OAuthAwareHttpClient::new(
         reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -67,7 +68,7 @@ pub async fn login_remote_server(
     server: &ConfiguredServer,
 ) -> Result<(), Box<dyn Error>> {
     let remote = remote_target(server)?;
-    let auth = RemoteAuth::new(server_name, &remote.url).await?;
+    let auth = RemoteAuth::new(server_name, &remote.url, &server.resolved_env_map()).await?;
     auth.ensure_authorized(None).await.map_err(Into::into)
 }
 
