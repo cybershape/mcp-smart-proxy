@@ -236,7 +236,7 @@ Open a sample popup dialog locally:
 msp input test
 ```
 
-The MCP tool `request_user_input_in_popup` is exposed only when the host starts `msp mcp --enable-input`. On macOS it uses an embedded Swift/AppKit helper, always appends a final `Other` option, assigns dialog-wide `1-9a-z` shortcuts in display order until the shortcut set is exhausted, lets plain shortcut keys select options while no custom field is focused, confirms `Other` with Return, returns one answer per question, and returns an empty `answers` object when the user cancels or closes the dialog.
+The MCP tool `request_user_input_in_popup` is exposed only when the host starts `msp mcp --enable-input`. On macOS it uses an embedded Swift/AppKit helper, presents questions in grouped cards with larger click targets, keeps a short header that explains the interaction model, sizes the window to its content up to a maximum height of 800 points, scrolls only the content area when that limit is exceeded, always appends a final `Other` option, assigns dialog-wide `1-9a-z` shortcuts in display order until the shortcut set is exhausted, lets plain shortcut keys select options while no custom field is focused, confirms `Other` with Return, returns one answer per question, and returns an empty `answers` object when the user cancels or closes the dialog.
 
 The released `msp` binary still ships as a single executable. On macOS, `msp` extracts the embedded popup helper into `~/.cache/mcp-smart-proxy/popup-input/` on first use and reuses it for later dialogs.
 

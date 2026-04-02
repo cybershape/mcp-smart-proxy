@@ -40,6 +40,8 @@
 - Keep popup modal completion one-shot in the Swift helper: Submit/Cancel initiated closure must not be reclassified as a window-close cancellation, so successful selections always survive until JSON response encoding.
 - Keep popup selection explicit in the Swift helper: opening the dialog or initial focus changes must not preselect any answer, and `Other` should only become selected after an actual user click or text edit.
 - Keep popup keyboard selection deterministic in the Swift helper: assign dialog-wide `1-9a-z` shortcuts in display order until that shortcut set is exhausted, let plain shortcut keys work whenever no custom input is focused, treat Return inside `Other` as confirm-and-blur, and auto-submit only after every answer has been confirmed from keyboard input.
+- Keep popup presentation aligned with native macOS dialog conventions: use a compact informative header, grouped question cards, larger full-row hit targets, restrained accenting for the selected option, and content-driven window sizing that avoids large empty regions.
+- Keep popup height strategy content-driven and bounded: size the dialog to the measured content by default, cap the full window height at 800 points, keep the action row fixed, and introduce scrolling only for the content region once that cap is exceeded.
 - Keep remote OAuth split by concern: generic OAuth discovery and token storage should stay reusable under `src/remote/oauth.rs`, while unsupported hosted endpoints should be rejected earlier by shared config-level remote URL validation.
 
 # Packages
