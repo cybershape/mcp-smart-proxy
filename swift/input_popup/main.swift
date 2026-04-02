@@ -36,6 +36,12 @@ private enum AnswerInputSource {
     case mouse
 }
 
+enum QuestionPresentationState {
+    case pending
+    case active
+    case answered
+}
+
 final class RoundedContainerView: NSView {
     var fillColor: NSColor = .controlBackgroundColor {
         didSet { updateAppearance() }
@@ -130,25 +136,29 @@ final class FlippedView: NSView {
 final class QuestionView: NSStackView, NSTextFieldDelegate {
     private let question: PopupQuestion
     private let shortcuts: [Character?]
+    private let promptLabel: NSTextField
+    private let sectionCard = RoundedContainerView()
     private var optionButtons: [NSButton] = []
     private var optionRows: [RoundedContainerView] = []
     private let customField = AutoSelectingTextField(string: "")
     private var selectedIndex: Int?
-    private var answerInputSource: AnswerInputSource?
     private var pendingKeyboardOtherConfirmation = false
+    private var presentationState: QuestionPresentationState = .pending
+    private var isInteractionEnabled = true
     var onAnswerStateChanged: (() -> Void)?
-    var onKeyboardAnswerConfirmed: (() -> Void)?
+    var onInteraction: (() -> Void)?
+    var onAnswerCommitted: (() -> Void)?
 
     init(question: PopupQuestion, shortcuts: [Character?]) {
         self.question = question
         self.shortcuts = shortcuts
+        self.promptLabel = NSTextField(wrappingLabelWithString: question.question)
         super.init(frame: .zero)
         orientation = .vertical
         alignment = .leading
         spacing = 8
         translatesAutoresizingMaskIntoConstraints = false
 
-        let promptLabel = NSTextField(wrappingLabelWithString: question.question)
         promptLabel.font = .systemFont(ofSize: 15, weight: .semibold)
         promptLabel.maximumNumberOfLines = 0
         promptLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -162,7 +172,6 @@ final class QuestionView: NSStackView, NSTextFieldDelegate {
         }
         customField.translatesAutoresizingMaskIntoConstraints = false
 
-        let sectionCard = RoundedContainerView()
         sectionCard.fillColor = .controlBackgroundColor.withAlphaComponent(0.72)
         sectionCard.strokeColor = .separatorColor.withAlphaComponent(0.55)
         sectionCard.cornerRadius = 14
@@ -181,6 +190,8 @@ final class QuestionView: NSStackView, NSTextFieldDelegate {
             options.trailingAnchor.constraint(equalTo: sectionCard.trailingAnchor, constant: -12),
             options.bottomAnchor.constraint(equalTo: sectionCard.bottomAnchor, constant: -12),
         ])
+
+        setQuestionState(.pending, isInteractive: false)
     }
 
     @available(*, unavailable)
@@ -202,8 +213,8 @@ final class QuestionView: NSStackView, NSTextFieldDelegate {
         return option.label
     }
 
-    var hasKeyboardConfirmedAnswer: Bool {
-        answerInputSource == .keyboard && selectedAnswer != nil
+    var isAnswered: Bool {
+        selectedAnswer != nil
     }
 
     func focusFirstInvalidControl() {
@@ -218,13 +229,35 @@ final class QuestionView: NSStackView, NSTextFieldDelegate {
     }
 
     func activateShortcut(at index: Int) {
+        guard isInteractionEnabled else {
+            return
+        }
+
+        recordInteraction()
         if isOther(question.options[index]) {
             beginKeyboardOtherSelection(at: index)
             return
         }
 
         selectOption(at: index, inputSource: .keyboard)
-        onKeyboardAnswerConfirmed?()
+        onAnswerCommitted?()
+    }
+
+    func setQuestionState(_ state: QuestionPresentationState, isInteractive: Bool) {
+        presentationState = state
+        isInteractionEnabled = isInteractive
+        optionButtons.forEach { $0.isEnabled = isInteractive }
+        customField.isEnabled = isInteractive
+        updatePresentationUI()
+    }
+
+    func autoSelectFirstOption() -> Bool {
+        guard !question.options.isEmpty else {
+            return false
+        }
+
+        selectOption(at: 0, inputSource: nil)
+        return selectedAnswer != nil
     }
 
     func isEditingCustomField() -> Bool {
@@ -236,16 +269,24 @@ final class QuestionView: NSStackView, NSTextFieldDelegate {
 
     @objc
     private func selectionChanged(_ sender: NSButton) {
+        guard isInteractionEnabled else {
+            return
+        }
+
         guard let index = optionButtons.firstIndex(of: sender) else {
             return
         }
 
+        recordInteraction()
         selectOption(at: index, inputSource: .mouse)
+
+        if !isOther(question.options[index]) {
+            onAnswerCommitted?()
+        }
     }
 
     private func selectOption(at index: Int, inputSource: AnswerInputSource?) {
         selectedIndex = index
-        answerInputSource = inputSource
         pendingKeyboardOtherConfirmation = false
         refreshSelectionUI()
         onAnswerStateChanged?()
@@ -262,28 +303,32 @@ final class QuestionView: NSStackView, NSTextFieldDelegate {
     }
 
     func controlTextDidBeginEditing(_ obj: Notification) {
+        guard isInteractionEnabled else {
+            return
+        }
+
         guard let otherIndex = otherOptionIndex else {
             return
         }
 
+        recordInteraction()
         selectedIndex = otherIndex
-        if !pendingKeyboardOtherConfirmation {
-            answerInputSource = .mouse
-        }
         refreshSelectionUI()
         onAnswerStateChanged?()
         _ = obj
     }
 
     func controlTextDidChange(_ obj: Notification) {
+        guard isInteractionEnabled else {
+            return
+        }
+
         guard let otherIndex = otherOptionIndex else {
             return
         }
 
+        recordInteraction()
         selectedIndex = otherIndex
-        if !pendingKeyboardOtherConfirmation {
-            answerInputSource = .mouse
-        }
         refreshSelectionUI()
         onAnswerStateChanged?()
         _ = obj
@@ -295,6 +340,7 @@ final class QuestionView: NSStackView, NSTextFieldDelegate {
         doCommandBy commandSelector: Selector
     ) -> Bool {
         guard
+            isInteractionEnabled,
             control === customField,
             commandSelector == #selector(NSResponder.insertNewline(_:))
         else {
@@ -311,16 +357,20 @@ final class QuestionView: NSStackView, NSTextFieldDelegate {
     }
 
     private func selectOtherOption() {
+        guard isInteractionEnabled else {
+            return
+        }
+
         guard let otherIndex = otherOptionIndex else {
             return
         }
 
+        recordInteraction()
         selectOption(at: otherIndex, inputSource: .mouse)
     }
 
     private func beginKeyboardOtherSelection(at index: Int) {
         selectedIndex = index
-        answerInputSource = nil
         pendingKeyboardOtherConfirmation = true
         refreshSelectionUI()
         onAnswerStateChanged?()
@@ -328,17 +378,14 @@ final class QuestionView: NSStackView, NSTextFieldDelegate {
     }
 
     private func confirmCustomFieldSelection() {
-        if pendingKeyboardOtherConfirmation, selectedAnswer != nil {
-            answerInputSource = .keyboard
-        }
-
+        let hasAnswer = selectedAnswer != nil
         pendingKeyboardOtherConfirmation = false
         onAnswerStateChanged?()
         window?.endEditing(for: nil)
         window?.makeFirstResponder(nil)
 
-        if answerInputSource == .keyboard, selectedAnswer != nil {
-            onKeyboardAnswerConfirmed?()
+        if hasAnswer {
+            onAnswerCommitted?()
         }
     }
 
@@ -355,6 +402,26 @@ final class QuestionView: NSStackView, NSTextFieldDelegate {
         }
 
         customField.alphaValue = selectedIndex.flatMap { isOther(question.options[$0]) ? 1.0 : 0.76 } ?? 0.76
+    }
+
+    private func updatePresentationUI() {
+        switch presentationState {
+        case .pending:
+            alphaValue = 0.68
+            promptLabel.textColor = .secondaryLabelColor
+            sectionCard.fillColor = .controlBackgroundColor.withAlphaComponent(0.46)
+            sectionCard.strokeColor = .separatorColor.withAlphaComponent(0.24)
+        case .active:
+            alphaValue = 1.0
+            promptLabel.textColor = .labelColor
+            sectionCard.fillColor = .controlBackgroundColor.withAlphaComponent(0.82)
+            sectionCard.strokeColor = .controlAccentColor.withAlphaComponent(0.34)
+        case .answered:
+            alphaValue = 1.0
+            promptLabel.textColor = .labelColor
+            sectionCard.fillColor = .selectedContentBackgroundColor.withAlphaComponent(0.08)
+            sectionCard.strokeColor = .separatorColor.withAlphaComponent(0.26)
+        }
     }
 
     private func optionsView() -> NSView {
@@ -480,6 +547,10 @@ final class QuestionView: NSStackView, NSTextFieldDelegate {
 
     @objc
     private func descriptionClicked(_ sender: NSClickGestureRecognizer) {
+        guard isInteractionEnabled else {
+            return
+        }
+
         guard
             let rawValue = sender.view?.identifier?.rawValue,
             let index = Int(rawValue)
@@ -487,7 +558,16 @@ final class QuestionView: NSStackView, NSTextFieldDelegate {
             return
         }
 
+        recordInteraction()
         selectOption(at: index, inputSource: .mouse)
+
+        if !isOther(question.options[index]) {
+            onAnswerCommitted?()
+        }
+    }
+
+    private func recordInteraction() {
+        onInteraction?()
     }
 
     private func isOther(_ option: PopupOption) -> Bool {
@@ -535,6 +615,7 @@ final class QuestionView: NSStackView, NSTextFieldDelegate {
 final class PopupWindowController: NSWindowController, NSWindowDelegate {
     private static let windowWidth: CGFloat = 620
     private static let maxWindowHeight: CGFloat = 800
+    private static let questionTimeoutSeconds = 10
     private static let topInset: CGFloat = 18
     private static let sideInset: CGFloat = 20
     private static let bottomInset: CGFloat = 18
@@ -543,12 +624,16 @@ final class PopupWindowController: NSWindowController, NSWindowDelegate {
     private let request: PopupInputRequest
     private let questionViews: [QuestionView]
     private let shortcutAssignments: [[Character?]]
+    private let statusLabel = NSTextField(wrappingLabelWithString: "")
     private let errorLabel = NSTextField(wrappingLabelWithString: "")
     private weak var contentScrollView: NSScrollView?
     private weak var contentStack: NSStackView?
     private weak var actionsView: NSView?
     private var contentScrollHeightConstraint: NSLayoutConstraint?
     private var isClosingProgrammatically = false
+    private var activeQuestionIndex = 0
+    private var questionTimer: Timer?
+    private var remainingQuestionSeconds = 10
     private(set) var response = PopupInputResponse.cancelled()
 
     init(request: PopupInputRequest) {
@@ -575,6 +660,7 @@ final class PopupWindowController: NSWindowController, NSWindowDelegate {
         }
         wireQuestionCallbacks()
         buildInterface()
+        activateQuestion(at: 0, startCountdown: false)
     }
 
     @available(*, unavailable)
@@ -595,6 +681,7 @@ final class PopupWindowController: NSWindowController, NSWindowDelegate {
         window.setFrame(startFrame, display: false)
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(nil)
+        activateQuestion(at: 0, startCountdown: true)
 
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.22
@@ -607,6 +694,8 @@ final class PopupWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        invalidateQuestionTimer()
+
         guard let window else {
             return
         }
@@ -626,7 +715,7 @@ final class PopupWindowController: NSWindowController, NSWindowDelegate {
 
     @objc
     private func submit(_ sender: Any?) {
-        guard let firstInvalid = questionViews.first(where: { $0.selectedAnswer == nil }) else {
+        guard let firstInvalidIndex = questionViews.firstIndex(where: { $0.selectedAnswer == nil }) else {
             let answers = Dictionary(uniqueKeysWithValues: zip(request.questions, questionViews).compactMap { pair in
                 let (question, view) = pair
                 return view.selectedAnswer.map { answer in
@@ -639,8 +728,12 @@ final class PopupWindowController: NSWindowController, NSWindowDelegate {
             return
         }
 
+        if firstInvalidIndex != activeQuestionIndex {
+            activateQuestion(at: firstInvalidIndex, startCountdown: true)
+        }
+
         setValidationMessage("Choose one answer for every question.")
-        firstInvalid.focusFirstInvalidControl()
+        questionViews[firstInvalidIndex].focusFirstInvalidControl()
         _ = sender
     }
 
@@ -656,6 +749,7 @@ final class PopupWindowController: NSWindowController, NSWindowDelegate {
             return
         }
 
+        invalidateQuestionTimer()
         isClosingProgrammatically = true
         let finalFrame = window.frame.offsetBy(dx: 0, dy: -12)
 
@@ -673,39 +767,55 @@ final class PopupWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func wireQuestionCallbacks() {
-        for view in questionViews {
+        for (index, view) in questionViews.enumerated() {
             view.onAnswerStateChanged = { [weak self] in
                 self?.setValidationMessage(nil)
             }
-            view.onKeyboardAnswerConfirmed = { [weak self] in
-                self?.setValidationMessage(nil)
-                self?.submitIfAllAnswersWereConfirmedByKeyboard()
+            view.onInteraction = { [weak self] in
+                self?.handleQuestionInteraction(at: index)
+            }
+            view.onAnswerCommitted = { [weak self] in
+                self?.handleAnswerCommitted(at: index)
             }
         }
     }
 
     private func handleShortcutKey(_ shortcut: Character) -> Bool {
-        guard !questionViews.contains(where: { $0.isEditingCustomField() }) else {
+        guard
+            questionViews.indices.contains(activeQuestionIndex),
+            !questionViews[activeQuestionIndex].isEditingCustomField()
+        else {
             return false
         }
 
-        for (questionIndex, shortcuts) in shortcutAssignments.enumerated() {
-            guard let optionIndex = shortcuts.firstIndex(where: { $0 == shortcut }) else {
-                continue
-            }
-
-            questionViews[questionIndex].activateShortcut(at: optionIndex)
-            return true
+        guard let optionIndex = shortcutAssignments[activeQuestionIndex].firstIndex(where: { $0 == shortcut }) else {
+            return false
         }
 
-        return false
+        questionViews[activeQuestionIndex].activateShortcut(at: optionIndex)
+        return true
     }
 
-    private func submitIfAllAnswersWereConfirmedByKeyboard() {
-        guard
-            questionViews.allSatisfy({ $0.selectedAnswer != nil }),
-            questionViews.allSatisfy(\.hasKeyboardConfirmedAnswer)
-        else {
+    private func handleQuestionInteraction(at index: Int) {
+        guard index == activeQuestionIndex else {
+            return
+        }
+
+        if questionTimer != nil {
+            invalidateQuestionTimer()
+            updateStatusLabel()
+        }
+    }
+
+    private func handleAnswerCommitted(at index: Int) {
+        guard index == activeQuestionIndex else {
+            return
+        }
+
+        setValidationMessage(nil)
+
+        if let nextIndex = nextUnansweredQuestionIndex(startingAt: index + 1) {
+            activateQuestion(at: nextIndex, startCountdown: true)
             return
         }
 
@@ -809,21 +919,28 @@ final class PopupWindowController: NSWindowController, NSWindowDelegate {
         stack.spacing = 3
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        let titleLabel = NSTextField(labelWithString: "Choose an answer for each question")
+        let titleLabel = NSTextField(labelWithString: "Answer one question at a time")
         titleLabel.font = .systemFont(ofSize: 18, weight: .semibold)
 
-        let subtitleLabel = NSTextField(
+        statusLabel.font = .systemFont(ofSize: 12)
+        statusLabel.textColor = .secondaryLabelColor
+        statusLabel.maximumNumberOfLines = 0
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let shortcutHelpLabel = NSTextField(
             wrappingLabelWithString:
-                "Choose one option in each section. Shortcuts 1-9 and A-Z work when a custom field is not focused."
+                "Shortcuts 1-9 and A-Z apply to the current question when a custom field is not focused. Press Return in Other to confirm and continue."
         )
-        subtitleLabel.font = .systemFont(ofSize: 12)
-        subtitleLabel.textColor = .secondaryLabelColor
-        subtitleLabel.maximumNumberOfLines = 0
-        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        shortcutHelpLabel.font = .systemFont(ofSize: 12)
+        shortcutHelpLabel.textColor = .secondaryLabelColor
+        shortcutHelpLabel.maximumNumberOfLines = 0
+        shortcutHelpLabel.translatesAutoresizingMaskIntoConstraints = false
 
         stack.addArrangedSubview(titleLabel)
-        stack.addArrangedSubview(subtitleLabel)
-        subtitleLabel.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        stack.addArrangedSubview(statusLabel)
+        stack.addArrangedSubview(shortcutHelpLabel)
+        statusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        shortcutHelpLabel.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
 
         return stack
     }
@@ -887,6 +1004,121 @@ final class PopupWindowController: NSWindowController, NSWindowDelegate {
 
         contentView.layoutSubtreeIfNeeded()
         window.setContentSize(NSSize(width: Self.windowWidth, height: targetContentRectHeight))
+    }
+
+    private func activateQuestion(at index: Int, startCountdown: Bool) {
+        guard questionViews.indices.contains(index) else {
+            return
+        }
+
+        activeQuestionIndex = index
+        updateQuestionStates()
+        updateWindowSizing()
+        scrollQuestionIntoView(index)
+
+        if startCountdown {
+            startQuestionTimer()
+        } else {
+            invalidateQuestionTimer()
+            remainingQuestionSeconds = Self.questionTimeoutSeconds
+            updateStatusLabel()
+        }
+    }
+
+    private func updateQuestionStates() {
+        for (index, view) in questionViews.enumerated() {
+            if index < activeQuestionIndex || view.isAnswered {
+                view.setQuestionState(.answered, isInteractive: false)
+            } else if index == activeQuestionIndex {
+                view.setQuestionState(.active, isInteractive: true)
+            } else {
+                view.setQuestionState(.pending, isInteractive: false)
+            }
+        }
+    }
+
+    private func startQuestionTimer() {
+        invalidateQuestionTimer()
+        remainingQuestionSeconds = Self.questionTimeoutSeconds
+        updateStatusLabel()
+
+        let timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            self?.tickQuestionTimer()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        questionTimer = timer
+    }
+
+    private func tickQuestionTimer() {
+        guard remainingQuestionSeconds > 0 else {
+            return
+        }
+
+        remainingQuestionSeconds -= 1
+        if remainingQuestionSeconds == 0 {
+            invalidateQuestionTimer()
+            autoSelectActiveQuestionIfNeeded()
+            return
+        }
+
+        updateStatusLabel()
+    }
+
+    private func autoSelectActiveQuestionIfNeeded() {
+        guard questionViews.indices.contains(activeQuestionIndex) else {
+            return
+        }
+
+        let activeView = questionViews[activeQuestionIndex]
+        guard !activeView.isAnswered else {
+            return
+        }
+
+        guard activeView.autoSelectFirstOption() else {
+            updateStatusLabel()
+            return
+        }
+
+        handleAnswerCommitted(at: activeQuestionIndex)
+    }
+
+    private func invalidateQuestionTimer() {
+        questionTimer?.invalidate()
+        questionTimer = nil
+    }
+
+    private func updateStatusLabel() {
+        guard questionViews.indices.contains(activeQuestionIndex) else {
+            statusLabel.stringValue = ""
+            return
+        }
+
+        let questionNumber = activeQuestionIndex + 1
+        let totalQuestions = questionViews.count
+        if questionTimer != nil {
+            statusLabel.stringValue =
+                "Question \(questionNumber) of \(totalQuestions). If you do nothing for \(remainingQuestionSeconds) seconds, the first option is selected automatically."
+            return
+        }
+
+        statusLabel.stringValue =
+            "Question \(questionNumber) of \(totalQuestions). The timer stops after your first interaction. Confirm this answer to continue."
+    }
+
+    private func nextUnansweredQuestionIndex(startingAt startIndex: Int) -> Int? {
+        guard startIndex < questionViews.count else {
+            return nil
+        }
+
+        return (startIndex..<questionViews.count).first(where: { !questionViews[$0].isAnswered })
+    }
+
+    private func scrollQuestionIntoView(_ index: Int) {
+        guard questionViews.indices.contains(index) else {
+            return
+        }
+
+        questionViews[index].scrollToVisible(questionViews[index].bounds)
     }
 
     private func presentedFrame(for window: NSWindow) -> NSRect {
