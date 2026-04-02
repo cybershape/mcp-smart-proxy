@@ -26,12 +26,14 @@ mod auth_cmd;
 mod config_cmd;
 mod import_cmd;
 mod input_cmd;
+mod mcp_cli;
 mod provider;
 
 use auth_cmd::{run_login_command, run_logout_command};
 use config_cmd::{ConfigCommandArgs, print_server_config};
 use import_cmd::{run_import_command, run_install_command, run_restore_command};
 use input_cmd::{run_input_popup_command, run_input_test_command};
+use mcp_cli::run_mcp_cli_command;
 use provider::resolve_default_command_provider;
 #[cfg(test)]
 use provider::{resolve_import_provider, resolve_install_import_provider};
@@ -132,6 +134,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
             provider,
             enable_input,
         }) => run_mcp_command(&config_path, provider, enable_input).await?,
+        Some(Command::Cli(command)) => run_mcp_cli_command(&config_path, &command.args).await?,
         Some(Command::Input { command }) => match command {
             InputCommand::Test => run_input_test_command()?,
             InputCommand::Popup => run_input_popup_command()?,

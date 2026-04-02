@@ -1,6 +1,7 @@
+use std::ffi::OsString;
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 pub const DEFAULT_CONFIG_PATH: &str = "~/.config/mcp-smart-proxy/config.toml";
 const CLI_ABOUT: &str = concat!("A smart MCP proxy ", env!("CARGO_PKG_VERSION"));
@@ -109,6 +110,8 @@ pub enum Command {
         #[arg(long)]
         enable_input: bool,
     },
+    /// Call cached MCP tools from the terminal through the shared daemon.
+    Cli(McpCliCommand),
     /// Open popup-based interactive input helpers.
     Input {
         #[command(subcommand)]
@@ -131,6 +134,13 @@ pub enum DaemonCommand {
     #[command(alias = "exit")]
     Stop,
     Restart,
+}
+
+#[derive(Debug, Clone, Args)]
+#[command(disable_help_flag = true, trailing_var_arg = true)]
+pub struct McpCliCommand {
+    #[arg(value_name = "ARGS", allow_hyphen_values = true)]
+    pub args: Vec<OsString>,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -413,6 +423,54 @@ mod tests {
             }
             other => panic!("expected mcp command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_cli_with_help_flag_as_raw_arg() {
+        let cli = Cli::parse_from(["msp", "cli", "-h"]);
+
+        match cli.command {
+            Some(Command::Cli(command)) => {
+                assert_eq!(command.args, vec![OsString::from("-h")]);
+            }
+            other => panic!("expected cli command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_cli_tool_arguments() {
+        let cli = Cli::parse_from([
+            "msp",
+            "--config",
+            "/tmp/demo.toml",
+            "cli",
+            "github",
+            "search",
+            "--query",
+            "rust",
+        ]);
+
+        match cli.command {
+            Some(Command::Cli(command)) => {
+                assert_eq!(
+                    command.args,
+                    vec![
+                        OsString::from("github"),
+                        OsString::from("search"),
+                        OsString::from("--query"),
+                        OsString::from("rust"),
+                    ]
+                );
+            }
+            other => panic!("expected cli command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_old_mcp_cli_shape() {
+        let error = Cli::try_parse_from(["msp", "mcp", "cli", "-h"]).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::UnknownArgument);
     }
 
     #[test]

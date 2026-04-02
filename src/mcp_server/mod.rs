@@ -34,7 +34,7 @@ pub async fn serve_cached_toolsets(
                 error,
             )
         })?;
-    let toolsets = daemon::load_toolsets(config_path, None, provider.provider_name())
+    let toolsets = daemon::load_toolsets(config_path, None, Some(provider.provider_name()))
         .await
         .map_err(|error| {
             operation_error(

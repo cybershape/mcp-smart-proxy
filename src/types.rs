@@ -189,7 +189,7 @@ pub enum DaemonRequest {
     Status,
     Exit,
     LoadToolsets {
-        provider: String,
+        provider: Option<String>,
     },
     CallTool {
         toolset_name: String,

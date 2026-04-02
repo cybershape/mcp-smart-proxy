@@ -453,6 +453,36 @@ msp mcp --provider codex
 
 When the proxy starts, `msp mcp --provider ...` serves the currently cached toolsets immediately and asks the shared daemon to refresh every enabled configured server in the background with the selected summary provider. The current stdio session keeps using the startup cache snapshot; refreshed cache is used by later sessions or explicit reloads. Background refresh failures are logged by the daemon and do not block MCP readiness.
 
+## Inspect and Call Cached MCP Tools from the Terminal
+
+`msp cli` gives you an interactive terminal view over the same cached MCP inventory that the proxy uses.
+
+List cached MCP servers and their summaries:
+
+```bash
+msp cli -h
+```
+
+List cached tools for one MCP server:
+
+```bash
+msp cli github -h
+```
+
+Show one tool's argument help:
+
+```bash
+msp cli github search_repositories -h
+```
+
+Call one downstream MCP tool through the shared daemon:
+
+```bash
+msp cli github search_repositories --query rust --page 1
+```
+
+`msp cli` starts or reuses the shared daemon, loads the current cached MCP snapshot through the daemon protocol, and routes the final downstream tool call through the daemon as well.
+
 ## Background Self-Update
 
 When `msp mcp` is running, it checks GitHub Releases every 30 minutes.

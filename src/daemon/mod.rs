@@ -143,13 +143,13 @@ pub async fn restart_daemon(
 pub async fn load_toolsets(
     config_path: &Path,
     socket_override: Option<&Path>,
-    provider_name: &str,
+    provider_name: Option<&str>,
 ) -> Result<Vec<CachedToolsetRecord>, Box<dyn Error>> {
     let socket_path = resolve_socket_path(config_path, socket_override)?;
     let response = send_request(
         &socket_path,
         &DaemonRequest::LoadToolsets {
-            provider: provider_name.to_string(),
+            provider: provider_name.map(ToOwned::to_owned),
         },
         "load_toolsets",
         Some(config_path),

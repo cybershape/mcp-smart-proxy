@@ -205,16 +205,18 @@ async fn handle_connection_inner(
                 .map_err(|error| error.to_string())
             {
                 Ok(toolsets) => {
-                    state
-                        .refresh_toolsets
-                        .spawn(&provider, state.logger.clone(), {
-                            let config_path = state.config_path.clone();
-                            let provider = provider.clone();
-                            move || async move {
-                                refresh_toolsets_for_provider(&config_path, &provider).await
-                            }
-                        })
-                        .await;
+                    if let Some(provider) = provider {
+                        state
+                            .refresh_toolsets
+                            .spawn(&provider, state.logger.clone(), {
+                                let config_path = state.config_path.clone();
+                                let provider = provider.clone();
+                                move || async move {
+                                    refresh_toolsets_for_provider(&config_path, &provider).await
+                                }
+                            })
+                            .await;
+                    }
                     DaemonResponse::Toolsets { toolsets }
                 }
                 Err(message) => DaemonResponse::Error { message },
