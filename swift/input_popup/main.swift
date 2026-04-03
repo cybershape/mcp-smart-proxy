@@ -657,6 +657,7 @@ final class PopupWindowController: NSWindowController, NSWindowDelegate {
     private let countdownLabel = NSTextField(wrappingLabelWithString: "")
     private let errorLabel = NSTextField(wrappingLabelWithString: "")
     private let stopTimerButton = NSButton(title: "Turn Off Auto-Select", target: nil, action: nil)
+    private let primaryActionButton = NSButton(title: "Continue", target: nil, action: nil)
     private weak var contentScrollView: NSScrollView?
     private weak var contentStack: NSStackView?
     private weak var actionsView: NSView?
@@ -825,6 +826,7 @@ final class PopupWindowController: NSWindowController, NSWindowDelegate {
         for (index, view) in questionViews.enumerated() {
             view.onAnswerStateChanged = { [weak self] in
                 self?.setValidationMessage(nil)
+                self?.updatePrimaryActionButton()
             }
             view.onInteraction = { [weak self] in
                 self?.handleQuestionInteraction(at: index)
@@ -1060,8 +1062,14 @@ final class PopupWindowController: NSWindowController, NSWindowDelegate {
         let cancelButton = NSButton(title: "Send Empty Answer", target: self, action: #selector(cancel))
         cancelButton.keyEquivalent = "\u{1b}"
 
-        buttons.addArrangedSubview(spacer)
+        primaryActionButton.target = self
+        primaryActionButton.action = #selector(submit(_:))
+        primaryActionButton.keyEquivalent = "\r"
+        primaryActionButton.keyEquivalentModifierMask = []
+
         buttons.addArrangedSubview(cancelButton)
+        buttons.addArrangedSubview(spacer)
+        buttons.addArrangedSubview(primaryActionButton)
 
         return buttons
     }
@@ -1082,6 +1090,17 @@ final class PopupWindowController: NSWindowController, NSWindowDelegate {
         errorLabel.stringValue = value
         errorLabel.isHidden = value.isEmpty
         updateWindowSizing()
+    }
+
+    private func updatePrimaryActionButton() {
+        guard questionViews.indices.contains(activeQuestionIndex) else {
+            primaryActionButton.title = "Continue"
+            primaryActionButton.isEnabled = false
+            return
+        }
+
+        primaryActionButton.title = questionViews.allSatisfy(\.isAnswered) ? "Finish" : "Continue"
+        primaryActionButton.isEnabled = questionViews[activeQuestionIndex].isAnswered
     }
 
     private func updateWindowSizing() {
@@ -1121,6 +1140,7 @@ final class PopupWindowController: NSWindowController, NSWindowDelegate {
 
         activeQuestionIndex = index
         updateQuestionStates()
+        updatePrimaryActionButton()
         updateWindowSizing()
         scrollQuestionIntoView(index)
 
@@ -1261,6 +1281,7 @@ final class PopupWindowController: NSWindowController, NSWindowDelegate {
 
         stopTimerButton.isHidden = isCountdownPermanentlyStopped
         stopTimerButton.isEnabled = !isCountdownPermanentlyStopped
+        updatePrimaryActionButton()
 
         if isCountdownPermanentlyStopped {
             progressLabel.stringValue = "Review Answers"
