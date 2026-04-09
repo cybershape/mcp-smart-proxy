@@ -643,12 +643,15 @@ final class QuestionView: NSStackView, NSTextFieldDelegate {
 final class PopupWindowController: NSWindowController, NSWindowDelegate {
     private static let windowWidth: CGFloat = 620
     private static let maxWindowHeight: CGFloat = 800
-    private static let questionTimeoutSeconds = 30
-    private static let modalPanelRunLoopMode = RunLoop.Mode("NSModalPanelRunLoopMode")
+    private static let questionTimeoutSeconds = 120
     private static let topInset: CGFloat = 18
     private static let sideInset: CGFloat = 20
     private static let bottomInset: CGFloat = 18
     private static let contentToActionsSpacing: CGFloat = 14
+    private static let savedWindowTopLeftXKey = "input_popup.window_top_left_x"
+    private static let savedWindowTopLeftYKey = "input_popup.window_top_left_y"
+    private static let minimumVisibleWidth: CGFloat = 120
+    private static let minimumVisibleHeight: CGFloat = 60
 
     private let request: PopupInputRequest
     private let questionViews: [QuestionView]
@@ -666,7 +669,9 @@ final class PopupWindowController: NSWindowController, NSWindowDelegate {
     private var isCountdownPermanentlyStopped = false
     private var activeQuestionIndex = 0
     private var questionTimer: Timer?
-    private var remainingQuestionSeconds = 10
+    private var remainingQuestionSeconds = PopupWindowController.questionTimeoutSeconds
+    private var completionHandler: ((PopupInputResponse) -> Void)?
+    private var hasCompleted = false
     private(set) var response = PopupInputResponse.cancelled()
 
     init(request: PopupInputRequest) {
@@ -686,6 +691,7 @@ final class PopupWindowController: NSWindowController, NSWindowDelegate {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
+        window.level = .normal
         super.init(window: window)
         window.delegate = self
         window.onShortcutKey = { [weak self] shortcut in
@@ -704,15 +710,17 @@ final class PopupWindowController: NSWindowController, NSWindowDelegate {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func present() -> PopupInputResponse {
+    func present(completion: @escaping (PopupInputResponse) -> Void) {
         guard let window else {
-            return .cancelled()
+            completion(.cancelled())
+            return
         }
 
+        completionHandler = completion
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         updateWindowSizing()
-        let targetFrame = presentedFrame(for: window)
+        let targetFrame = restoredPresentedFrame(for: window) ?? presentedFrame(for: window)
         let startFrame = hiddenStartFrame(for: targetFrame, window: window)
         window.setFrame(startFrame, display: false)
         window.makeKeyAndOrderFront(nil)
@@ -724,9 +732,6 @@ final class PopupWindowController: NSWindowController, NSWindowDelegate {
             context.allowsImplicitAnimation = true
             window.animator().setFrame(targetFrame, display: true)
         }
-
-        _ = NSApp.runModal(for: window)
-        return response
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -741,10 +746,9 @@ final class PopupWindowController: NSWindowController, NSWindowDelegate {
             return
         }
 
+        persistWindowPlacement(for: window)
         response = .cancelled()
-        if NSApp.modalWindow === window {
-            NSApp.stopModal(withCode: .abort)
-        }
+        finishIfNeeded()
 
         _ = notification
     }
@@ -789,23 +793,25 @@ final class PopupWindowController: NSWindowController, NSWindowDelegate {
         })
         setValidationMessage(nil)
         response = PopupInputResponse(answers: answers)
-        close(with: .OK)
+        closeWindow()
         _ = sender
     }
 
     @objc
     private func cancel(_ sender: Any?) {
         response = .cancelled()
-        close(with: .abort)
+        closeWindow()
         _ = sender
     }
 
-    private func close(with code: NSApplication.ModalResponse) {
+    private func closeWindow() {
         guard let window else {
+            finishIfNeeded()
             return
         }
 
         invalidateQuestionTimer()
+        persistWindowPlacement(for: window)
         isClosingProgrammatically = true
         let finalFrame = window.frame.offsetBy(dx: 0, dy: -12)
 
@@ -815,7 +821,7 @@ final class PopupWindowController: NSWindowController, NSWindowDelegate {
             window.animator().alphaValue = 0
             window.animator().setFrame(finalFrame, display: true)
         } completionHandler: {
-            NSApp.stopModal(withCode: code)
+            self.finishIfNeeded()
             window.orderOut(nil)
             window.alphaValue = 1
             window.close()
@@ -1187,7 +1193,6 @@ final class PopupWindowController: NSWindowController, NSWindowDelegate {
             self?.tickQuestionTimer()
         }
         RunLoop.main.add(timer, forMode: .common)
-        RunLoop.main.add(timer, forMode: Self.modalPanelRunLoopMode)
         questionTimer = timer
         updateStatusLabel()
     }
@@ -1319,6 +1324,41 @@ final class PopupWindowController: NSWindowController, NSWindowDelegate {
         questionViews[index].scrollToVisible(questionViews[index].bounds)
     }
 
+    private func finishIfNeeded() {
+        guard !hasCompleted else {
+            return
+        }
+
+        hasCompleted = true
+        let response = response
+        completionHandler?(response)
+        completionHandler = nil
+    }
+
+    private func restoredPresentedFrame(for window: NSWindow) -> NSRect? {
+        guard let storedTopLeft = Self.storedWindowTopLeftPoint() else {
+            return nil
+        }
+
+        var restoredFrame = NSRect(
+            x: storedTopLeft.x,
+            y: storedTopLeft.y - window.frame.height,
+            width: window.frame.width,
+            height: window.frame.height
+        )
+
+        if let matchedScreen = Self.screenContainingVisibleTopLeftPoint(storedTopLeft) {
+            let visibleFrame = matchedScreen.visibleFrame
+            restoredFrame.origin.y = min(restoredFrame.origin.y, visibleFrame.maxY - restoredFrame.height)
+        }
+
+        guard Self.frameIsReasonablyVisible(restoredFrame) else {
+            return nil
+        }
+
+        return restoredFrame
+    }
+
     private func presentedFrame(for window: NSWindow) -> NSRect {
         let visibleFrame = activeVisibleFrame(for: window)
         let size = window.frame.size
@@ -1328,7 +1368,7 @@ final class PopupWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func hiddenStartFrame(for targetFrame: NSRect, window: NSWindow) -> NSRect {
-        let visibleFrame = activeVisibleFrame(for: window)
+        let visibleFrame = Self.visibleFrame(for: targetFrame) ?? activeVisibleFrame(for: window)
         var frame = targetFrame
         frame.origin.y = visibleFrame.minY - frame.height
         return frame
@@ -1348,6 +1388,55 @@ final class PopupWindowController: NSWindowController, NSWindowDelegate {
         let fallbackHeight = max(window?.frame.height ?? 420, 420) + 32
         let fallbackWidth = max(window?.frame.width ?? Self.windowWidth, Self.windowWidth)
         return NSRect(x: 0, y: 0, width: fallbackWidth, height: fallbackHeight)
+    }
+
+    private func persistWindowPlacement(for window: NSWindow) {
+        let topLeft = NSPoint(x: window.frame.minX, y: window.frame.maxY)
+        let defaults = UserDefaults.standard
+        defaults.set(topLeft.x, forKey: Self.savedWindowTopLeftXKey)
+        defaults.set(topLeft.y, forKey: Self.savedWindowTopLeftYKey)
+    }
+
+    private static func storedWindowTopLeftPoint() -> NSPoint? {
+        let defaults = UserDefaults.standard
+        guard
+            defaults.object(forKey: savedWindowTopLeftXKey) != nil,
+            defaults.object(forKey: savedWindowTopLeftYKey) != nil
+        else {
+            return nil
+        }
+
+        return NSPoint(
+            x: defaults.double(forKey: savedWindowTopLeftXKey),
+            y: defaults.double(forKey: savedWindowTopLeftYKey)
+        )
+    }
+
+    private static func screenContainingVisibleTopLeftPoint(_ point: NSPoint) -> NSScreen? {
+        screensSupporting(point: point).first
+    }
+
+    private static func visibleFrame(for frame: NSRect) -> NSRect? {
+        NSScreen.screens
+            .map(\.visibleFrame)
+            .first(where: { $0.intersects(frame) })
+    }
+
+    private static func frameIsReasonablyVisible(_ frame: NSRect) -> Bool {
+        guard !frame.isEmpty else {
+            return false
+        }
+
+        return NSScreen.screens.map(\.visibleFrame).contains { visibleFrame in
+            let intersection = visibleFrame.intersection(frame)
+            return
+                intersection.width >= minimumVisibleWidth &&
+                intersection.height >= minimumVisibleHeight
+        }
+    }
+
+    private static func screensSupporting(point: NSPoint) -> [NSScreen] {
+        NSScreen.screens.filter { $0.visibleFrame.insetBy(dx: -1, dy: -1).contains(point) }
     }
 
     private static func assignShortcuts(for request: PopupInputRequest) -> [[Character?]] {
@@ -1406,7 +1495,13 @@ private func showPopup(for request: PopupInputRequest) throws -> PopupInputRespo
     app.finishLaunching()
 
     let controller = PopupWindowController(request: request)
-    return controller.present()
+    var popupResponse = PopupInputResponse.cancelled()
+    controller.present { response in
+        popupResponse = response
+        NSApp.stop(nil)
+    }
+    app.run()
+    return popupResponse
 }
 
 private func writeResponse(_ response: PopupInputResponse) throws {
