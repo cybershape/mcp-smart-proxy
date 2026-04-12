@@ -28,8 +28,18 @@ pub enum Command {
     Add {
         #[arg(long, value_enum)]
         provider: ProviderName,
+        #[arg(long, value_name = "URL")]
+        url: Option<String>,
+        #[arg(long)]
+        enabled: Option<bool>,
+        #[arg(long = "header", value_name = "KEY=VALUE")]
+        headers: Vec<String>,
+        #[arg(long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
+        #[arg(long = "env-var", value_name = "NAME")]
+        env_vars: Vec<String>,
         name: String,
-        #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
+        #[arg(num_args = 0.., trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
     /// List configured MCP servers.
@@ -244,10 +254,20 @@ mod tests {
         match cli.command {
             Some(Command::Add {
                 provider,
+                url,
+                enabled,
+                headers,
+                env,
+                env_vars,
                 name,
                 command,
             }) => {
                 assert!(matches!(provider, ProviderName::Codex));
+                assert_eq!(url, None);
+                assert_eq!(enabled, None);
+                assert!(headers.is_empty());
+                assert!(env.is_empty());
+                assert!(env_vars.is_empty());
                 assert_eq!(name, "github");
                 assert_eq!(
                     command,
@@ -257,6 +277,53 @@ mod tests {
                         "@modelcontextprotocol/server-github".to_string(),
                     ]
                 );
+            }
+            other => panic!("expected add command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_remote_add_with_initial_config() {
+        let cli = Cli::parse_from([
+            "msp",
+            "add",
+            "--provider",
+            "codex",
+            "--url",
+            "https://example.com/mcp",
+            "--header",
+            "Authorization=Bearer ${DEMO_TOKEN}",
+            "--env",
+            "DEMO_REGION=global",
+            "--env-var",
+            "DEMO_TOKEN",
+            "--enabled",
+            "false",
+            "remote-demo",
+        ]);
+
+        match cli.command {
+            Some(Command::Add {
+                provider,
+                url,
+                enabled,
+                headers,
+                env,
+                env_vars,
+                name,
+                command,
+            }) => {
+                assert!(matches!(provider, ProviderName::Codex));
+                assert_eq!(url.as_deref(), Some("https://example.com/mcp"));
+                assert_eq!(enabled, Some(false));
+                assert_eq!(
+                    headers,
+                    vec!["Authorization=Bearer ${DEMO_TOKEN}".to_string()]
+                );
+                assert_eq!(env, vec!["DEMO_REGION=global".to_string()]);
+                assert_eq!(env_vars, vec!["DEMO_TOKEN".to_string()]);
+                assert_eq!(name, "remote-demo");
+                assert!(command.is_empty());
             }
             other => panic!("expected add command, got {other:?}"),
         }

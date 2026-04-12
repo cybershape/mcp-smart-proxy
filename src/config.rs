@@ -67,6 +67,29 @@ pub struct ImportableServer {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddServerConfig {
+    pub command: Vec<String>,
+    pub url: Option<String>,
+    pub headers: BTreeMap<String, String>,
+    pub enabled: bool,
+    pub env: BTreeMap<String, String>,
+    pub env_vars: Vec<String>,
+}
+
+impl Default for AddServerConfig {
+    fn default() -> Self {
+        Self {
+            command: Vec::new(),
+            url: None,
+            headers: BTreeMap::new(),
+            enabled: true,
+            env: BTreeMap::new(),
+            env_vars: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListedServer {
     pub name: String,
     pub command: String,
@@ -185,7 +208,7 @@ pub use import_export::{
     restore_opencode_mcp_servers,
 };
 pub use local::{
-    add_server, configured_server, contains_server_name, import_server, list_servers,
+    add_server_with_config, configured_server, contains_server_name, import_server, list_servers,
     load_config_table, load_server_config, remove_server, server_is_enabled, set_server_enabled,
     update_server_config,
 };

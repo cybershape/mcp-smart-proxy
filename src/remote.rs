@@ -439,4 +439,68 @@ mod tests {
             "remote header `mcp-protocol-version` is reserved and cannot be configured"
         );
     }
+
+    #[test]
+    fn runtime_requests_apply_configured_custom_headers() {
+        let client = reqwest::Client::new();
+        let request = client.post("http://example.com");
+        let headers = HashMap::from([
+            (
+                HeaderName::from_static("authorization"),
+                HeaderValue::from_static("Bearer configured-token"),
+            ),
+            (
+                HeaderName::from_static("x-team"),
+                HeaderValue::from_static("platform"),
+            ),
+        ]);
+
+        let request = OAuthAwareHttpClient::attach_auth_header(
+            request,
+            Some("oauth-token".to_string()),
+            &headers,
+        );
+        let request = OAuthAwareHttpClient::apply_custom_headers(request, headers)
+            .expect("configured headers should be applied")
+            .build()
+            .expect("request should build");
+
+        assert_eq!(
+            request.headers().get(AUTHORIZATION),
+            Some(&HeaderValue::from_static("Bearer configured-token"))
+        );
+        assert_eq!(
+            request.headers().get("x-team"),
+            Some(&HeaderValue::from_static("platform"))
+        );
+    }
+
+    #[test]
+    fn runtime_requests_attach_oauth_bearer_when_authorization_is_not_configured() {
+        let client = reqwest::Client::new();
+        let request = client.post("http://example.com");
+        let headers = HashMap::from([(
+            HeaderName::from_static("x-team"),
+            HeaderValue::from_static("platform"),
+        )]);
+
+        let request = OAuthAwareHttpClient::attach_auth_header(
+            request,
+            Some("oauth-token".to_string()),
+            &headers,
+        );
+        let request = OAuthAwareHttpClient::apply_custom_headers(request, headers)
+            .expect("configured headers should be applied")
+            .build()
+            .expect("request should build");
+
+        assert_eq!(
+            request.headers().get(AUTHORIZATION),
+            Some(&HeaderValue::from_static("Bearer oauth-token"))
+        );
+        assert_eq!(
+            request.headers().get("x-team"),
+            Some(&HeaderValue::from_static("platform"))
+        );
+    }
 }

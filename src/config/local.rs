@@ -10,8 +10,8 @@ use crate::paths::{cache_file_path, sanitize_name};
 use crate::types::{CachedTools, ConfiguredServer, ConfiguredTransport};
 
 use super::{
-    ImportableServer, RemovedServer, ServerConfigSnapshot, SetServerEnabledResult, StdioServer,
-    UpdateServerConfig, is_self_server_command,
+    AddServerConfig, ImportableServer, RemovedServer, ServerConfigSnapshot, SetServerEnabledResult,
+    StdioServer, UpdateServerConfig, is_self_server_command,
 };
 
 mod lookup;
@@ -47,23 +47,58 @@ enum ServerTransportDraft {
 }
 
 impl ServerRecordDraft {
-    fn from_add_command(raw_command: Vec<String>) -> Result<Self, Box<dyn Error>> {
-        if raw_command.len() == 1 && looks_like_url(&raw_command[0]) {
-            return Ok(Self::remote(
-                raw_command[0].clone(),
-                BTreeMap::new(),
-                true,
-                BTreeMap::new(),
-                Vec::new(),
-            ));
-        }
+    fn from_add_config(name: &str, server: AddServerConfig) -> Result<Self, Box<dyn Error>> {
+        let AddServerConfig {
+            command,
+            url,
+            headers,
+            enabled,
+            env,
+            env_vars,
+        } = server;
+        let env_vars = dedupe_env_vars(env_vars);
 
-        Ok(Self::stdio(
-            StdioServer::from_command(raw_command)?,
-            true,
-            BTreeMap::new(),
-            Vec::new(),
-        ))
+        match url {
+            Some(url) => {
+                if !command.is_empty() {
+                    return Err(format!(
+                        "server `{name}` cannot define both a command and `--url` when adding it"
+                    )
+                    .into());
+                }
+                if !looks_like_url(&url) {
+                    return Err(format!(
+                        "server `{name}` has an invalid remote `url` value `{url}`"
+                    )
+                    .into());
+                }
+
+                Ok(Self::remote(url, headers, enabled, env, env_vars))
+            }
+            None if command.len() == 1 && looks_like_url(&command[0]) => Ok(Self::remote(
+                command[0].clone(),
+                headers,
+                enabled,
+                env,
+                env_vars,
+            )),
+            None if !command.is_empty() => {
+                if !headers.is_empty() {
+                    return Err(format!(
+                        "server `{name}` uses stdio transport; `--header` is only supported for remote servers"
+                    )
+                    .into());
+                }
+
+                Ok(Self::stdio(
+                    StdioServer::from_command(command)?,
+                    enabled,
+                    env,
+                    env_vars,
+                ))
+            }
+            None => Err(format!("server `{name}` is missing a command or `--url`").into()),
+        }
     }
 
     fn from_importable(server: &ImportableServer) -> Result<Self, Box<dyn Error>> {
@@ -144,15 +179,15 @@ impl ServerRecordDraft {
     }
 }
 
-pub fn add_server(
+pub fn add_server_with_config(
     config_path: &Path,
     name: &str,
-    raw_command: Vec<String>,
+    server: AddServerConfig,
 ) -> Result<String, Box<dyn Error>> {
     save_server(
         config_path,
         name,
-        ServerRecordDraft::from_add_command(raw_command)?,
+        ServerRecordDraft::from_add_config(name, server)?,
     )
 }
 
@@ -515,4 +550,10 @@ pub(crate) fn merge_env_vars(target: &mut Vec<String>, additions: Vec<String>) {
 
 fn looks_like_url(value: &str) -> bool {
     value.starts_with("http://") || value.starts_with("https://")
+}
+
+fn dedupe_env_vars(env_vars: Vec<String>) -> Vec<String> {
+    let mut deduped = Vec::new();
+    merge_env_vars(&mut deduped, env_vars);
+    deduped
 }

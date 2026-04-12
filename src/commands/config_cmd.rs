@@ -108,7 +108,7 @@ pub(crate) fn print_server_config(
     }
 }
 
-fn parse_key_value_assignments(
+pub(crate) fn parse_key_value_assignments(
     assignments: &[String],
     flag_name: &str,
 ) -> Result<BTreeMap<String, String>, Box<dyn Error>> {

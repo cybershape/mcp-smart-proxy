@@ -95,6 +95,12 @@ To add a new server after that:
 msp add --provider codex github npx -y @modelcontextprotocol/server-github
 ```
 
+To add a remote server that needs headers up front:
+
+```bash
+msp add --provider codex --url https://example.com/mcp --header Authorization='Bearer ${DEMO_TOKEN}' remote-demo
+```
+
 ### Fastest path for OpenCode or Claude Code
 
 Import existing servers:
@@ -165,7 +171,13 @@ If the command is a single `http://` or `https://` URL, `msp` stores it as a nat
 msp add --provider codex remote-demo https://example.com/mcp
 ```
 
-`add` requires `--provider` so `msp` can summarize the fetched tools immediately. The command succeeds only when both config persistence and the initial cache refresh succeed; if cache generation fails, `msp` rolls back the new server entry instead of leaving partial config behind. You can still refresh later with `msp reload --provider ...`, or let the shared `msp mcp --provider ...` daemon refresh enabled servers in the background after startup.
+If the server needs headers, env values, forwarded env vars, or an initial enabled state, pass them during `add` so the first cache refresh uses the final connection settings:
+
+```bash
+msp add --provider codex --url https://example.com/mcp --header Authorization='Bearer ${DEMO_TOKEN}' --env DEMO_REGION=global --env-var DEMO_TOKEN --enabled false remote-demo
+```
+
+`add` requires `--provider` so `msp` can summarize the fetched tools immediately. The command succeeds only when both config persistence and the initial cache refresh succeed; if cache generation fails, `msp` rolls back the new server entry instead of leaving partial config behind. When you use config flags with `add`, place them before the server name so the trailing command remains untouched. You can still refresh later with `msp reload --provider ...`, or let the shared `msp mcp --provider ...` daemon refresh enabled servers in the background after startup.
 
 ### List servers
 

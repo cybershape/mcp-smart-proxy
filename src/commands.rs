@@ -9,8 +9,8 @@ use clap::Parser;
 use crate::cli::ImportSource;
 use crate::cli::{Cli, Command, DaemonCommand, InputCommand, ProviderName};
 use crate::config::{
-    add_server, list_servers, load_config_table, load_server_config, remove_server,
-    set_server_enabled, update_server_config,
+    list_servers, load_config_table, load_server_config, remove_server, set_server_enabled,
+    update_server_config,
 };
 use crate::console::{describe_command, operation_error, print_app_event, print_app_warning};
 use crate::daemon;
@@ -22,6 +22,7 @@ use crate::reload::reload_server_with_provider;
 use crate::types::ModelProviderConfig;
 use crate::version_check;
 
+mod add_cmd;
 mod auth_cmd;
 mod config_cmd;
 mod import_cmd;
@@ -29,6 +30,7 @@ mod input_cmd;
 mod mcp_cli;
 mod provider;
 
+use add_cmd::{AddCommandArgs, run_add_command};
 use auth_cmd::{run_login_command, run_logout_command};
 use config_cmd::{ConfigCommandArgs, print_server_config};
 use import_cmd::{run_import_command, run_install_command, run_restore_command};
@@ -67,9 +69,29 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
     match cli.command {
         Some(Command::Add {
             provider,
+            url,
+            enabled,
+            headers,
+            env,
+            env_vars,
             name,
             command,
-        }) => run_add_command(&config_path, provider, &name, command).await?,
+        }) => {
+            run_add_command(
+                &config_path,
+                provider,
+                &name,
+                AddCommandArgs {
+                    url,
+                    enabled,
+                    headers,
+                    env,
+                    env_vars,
+                    command,
+                },
+            )
+            .await?
+        }
         Some(Command::List) => run_list_command(&config_path)?,
         Some(Command::Enable { name }) => run_set_enabled_command(&config_path, &name, true)?,
         Some(Command::Disable { name }) => run_set_enabled_command(&config_path, &name, false)?,
@@ -201,78 +223,6 @@ async fn run_daemon_command(
             Ok(())
         }
     }
-}
-
-async fn run_add_command(
-    config_path: &Path,
-    provider: ProviderName,
-    name: &str,
-    command: Vec<String>,
-) -> Result<(), Box<dyn Error>> {
-    let resolved_provider = resolve_default_command_provider(Some(provider)).map_err(|error| {
-        operation_error(
-            "cli.add.load_provider",
-            format!("failed to resolve the summary provider before adding `{name}`"),
-            error,
-        )
-    })?;
-    let server_name = add_server(config_path, name, command).map_err(|error| {
-        operation_error(
-            "cli.add",
-            format!(
-                "failed to add MCP server `{name}` into {}",
-                format_path_for_display(config_path)
-            ),
-            error,
-        )
-    })?;
-    let reload_result = match reload_server_with_provider(
-        config_path,
-        &server_name,
-        &resolved_provider,
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(error) => {
-            remove_server(config_path, &server_name).map_err(|rollback_error| {
-                    operation_error(
-                        "cli.add.rollback",
-                        format!(
-                            "failed to roll back MCP server `{server_name}` in {} after cache generation failed: original cache error: {}",
-                            format_path_for_display(config_path),
-                            error
-                        ),
-                        rollback_error,
-                    )
-                })?;
-            return Err(operation_error(
-                "cli.add.reload",
-                format!(
-                    "failed to populate the initial cache for MCP server `{server_name}`; rolled back the config change in {}",
-                    format_path_for_display(config_path)
-                ),
-                error,
-            ));
-        }
-    };
-    print_app_event(
-        "cli.add",
-        if reload_result.updated {
-            format!(
-                "Added MCP server `{server_name}` to {} and cached its tools at {}",
-                format_path_for_display(config_path),
-                format_path_for_display(&reload_result.cache_path)
-            )
-        } else {
-            format!(
-                "Added MCP server `{server_name}` to {} and reused matching cached tools at {}",
-                format_path_for_display(config_path),
-                format_path_for_display(&reload_result.cache_path)
-            )
-        },
-    );
-    Ok(())
 }
 
 fn run_list_command(config_path: &Path) -> Result<(), Box<dyn Error>> {
@@ -718,7 +668,14 @@ mod tests {
                 &config_path,
                 ProviderName::Codex,
                 &server_name,
-                vec!["definitely-not-a-real-mcp-command".to_string()],
+                AddCommandArgs {
+                    url: None,
+                    enabled: None,
+                    headers: Vec::new(),
+                    env: Vec::new(),
+                    env_vars: Vec::new(),
+                    command: vec!["definitely-not-a-real-mcp-command".to_string()],
+                },
             ))
             .unwrap_err();
 

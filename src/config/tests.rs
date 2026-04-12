@@ -1924,10 +1924,13 @@ fn rejects_codex_import_when_no_servers_are_configured() {
 #[test]
 fn writes_remote_url_server_to_config() {
     let config_path = unique_test_path("write-remote-server-config.toml");
-    let server_name = add_server(
+    let server_name = add_server_with_config(
         &config_path,
         "ones",
-        vec!["https://ones.com/mcp".to_string()],
+        AddServerConfig {
+            command: vec!["https://ones.com/mcp".to_string()],
+            ..AddServerConfig::default()
+        },
     )
     .unwrap();
     let config = load_config_table(&config_path).unwrap();
@@ -1942,12 +1945,77 @@ fn writes_remote_url_server_to_config() {
 }
 
 #[test]
+fn writes_remote_url_server_with_initial_config_to_config() {
+    let config_path = unique_test_path("write-remote-server-with-config.toml");
+    let server_name = add_server_with_config(
+        &config_path,
+        "ones",
+        AddServerConfig {
+            url: Some("https://ones.com/mcp".to_string()),
+            headers: BTreeMap::from([(
+                "Authorization".to_string(),
+                "Bearer ${ONES_TOKEN}".to_string(),
+            )]),
+            enabled: false,
+            env: BTreeMap::from([("ONES_REGION".to_string(), "global".to_string())]),
+            env_vars: vec!["ONES_TOKEN".to_string(), "ONES_TOKEN".to_string()],
+            ..AddServerConfig::default()
+        },
+    )
+    .unwrap();
+    let config = load_config_table(&config_path).unwrap();
+
+    let saved = config["servers"][&server_name].as_table().unwrap();
+    assert_eq!(saved["url"].as_str(), Some("https://ones.com/mcp"));
+    assert_eq!(saved["enabled"].as_bool(), Some(false));
+    assert_eq!(
+        saved["headers"]["Authorization"].as_str(),
+        Some("Bearer ${ONES_TOKEN}")
+    );
+    assert_eq!(saved["env"]["ONES_REGION"].as_str(), Some("global"));
+    assert_eq!(
+        saved["env_vars"].as_array().unwrap(),
+        &vec![Value::String("ONES_TOKEN".to_string())]
+    );
+
+    fs::remove_file(config_path).unwrap();
+}
+
+#[test]
+fn rejects_remote_headers_for_stdio_add() {
+    let config_path = unique_test_path("reject-stdio-add-headers.toml");
+    let error = add_server_with_config(
+        &config_path,
+        "demo",
+        AddServerConfig {
+            command: vec![
+                "npx".to_string(),
+                "-y".to_string(),
+                "demo-server".to_string(),
+            ],
+            headers: BTreeMap::from([("Authorization".to_string(), "Bearer token".to_string())]),
+            ..AddServerConfig::default()
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "server `demo` uses stdio transport; `--header` is only supported for remote servers"
+    );
+    assert!(!config_path.exists());
+}
+
+#[test]
 fn rejects_unsupported_figma_remote_url_when_adding_server() {
     let config_path = unique_test_path("reject-figma-remote-add.toml");
-    let error = add_server(
+    let error = add_server_with_config(
         &config_path,
         "figma",
-        vec!["https://mcp.figma.com/mcp".to_string()],
+        AddServerConfig {
+            command: vec!["https://mcp.figma.com/mcp".to_string()],
+            ..AddServerConfig::default()
+        },
     )
     .unwrap_err();
 
@@ -2530,17 +2598,23 @@ fn remove_server_waits_for_cache_lock_before_updating_state() {
 #[test]
 fn rejects_duplicate_server_name() {
     let config_path = unique_test_path("duplicate-server-config.toml");
-    add_server(
+    add_server_with_config(
         &config_path,
         "ones",
-        vec!["https://ones.com/mcp".to_string()],
+        AddServerConfig {
+            command: vec!["https://ones.com/mcp".to_string()],
+            ..AddServerConfig::default()
+        },
     )
     .unwrap();
 
-    let error = add_server(
+    let error = add_server_with_config(
         &config_path,
         "ones",
-        vec!["https://example.com/mcp".to_string()],
+        AddServerConfig {
+            command: vec!["https://example.com/mcp".to_string()],
+            ..AddServerConfig::default()
+        },
     )
     .unwrap_err();
 
@@ -2552,10 +2626,13 @@ fn rejects_duplicate_server_name() {
 fn writes_server_without_provider_configuration() {
     let config_path = unique_test_path("server-without-provider-config.toml");
 
-    let server_name = add_server(
+    let server_name = add_server_with_config(
         &config_path,
         "ones",
-        vec!["https://ones.com/mcp".to_string()],
+        AddServerConfig {
+            command: vec!["https://ones.com/mcp".to_string()],
+            ..AddServerConfig::default()
+        },
     )
     .unwrap();
     let config = load_config_table(&config_path).unwrap();
@@ -2573,10 +2650,13 @@ fn writes_server_without_provider_configuration() {
 #[test]
 fn rejects_adding_self_as_server() {
     let config_path = unique_test_path("self-server-config.toml");
-    let error = add_server(
+    let error = add_server_with_config(
         &config_path,
         "proxy",
-        vec!["msp".to_string(), "mcp".to_string()],
+        AddServerConfig {
+            command: vec!["msp".to_string(), "mcp".to_string()],
+            ..AddServerConfig::default()
+        },
     )
     .unwrap_err();
 
