@@ -16,6 +16,7 @@ use crate::input_popup::{PopupInputRequest, request_user_input_in_popup};
 use crate::toon::rewrite_call_tool_result_to_toon;
 use crate::types::CachedToolsetRecord;
 
+use super::lua_eval::{EVAL_LUA_SCRIPT_NAME, EvalLuaScriptRequest, execute_eval_lua_script};
 use super::tools::{
     ACTIVATE_ADDITIONAL_MCP_NAME, ACTIVATE_TOOL_IN_ADDITIONAL_MCP_NAME,
     ActivateAdditionalMcpRequest, ActivateToolInAdditionalMcpRequest,
@@ -103,6 +104,14 @@ impl SmartProxyMcpServer {
         ))
     }
 
+    async fn call_eval_lua_script(
+        &self,
+        arguments: JsonMap<String, JsonValue>,
+    ) -> Result<CallToolResult, McpError> {
+        let params: EvalLuaScriptRequest = parse_tool_request(EVAL_LUA_SCRIPT_NAME, arguments)?;
+        Ok(execute_eval_lua_script(&self.config_path, params).await)
+    }
+
     async fn call_downstream_tool(
         &self,
         toolset: &CachedToolsetRecord,
@@ -169,6 +178,7 @@ impl ServerHandler for SmartProxyMcpServer {
             ACTIVATE_ADDITIONAL_MCP_NAME => self.call_activate_tool(arguments).await,
             ACTIVATE_TOOL_IN_ADDITIONAL_MCP_NAME => self.call_activate_tool_detail(arguments).await,
             CALL_TOOL_IN_ADDITIONAL_MCP_NAME => self.call_external_tool(arguments).await,
+            EVAL_LUA_SCRIPT_NAME => self.call_eval_lua_script(arguments).await,
             REQUEST_USER_INPUT_IN_POPUP_NAME => {
                 self.call_request_user_input_in_popup(arguments).await
             }

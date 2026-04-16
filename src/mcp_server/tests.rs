@@ -9,6 +9,7 @@ use crate::paths::cache_file_path_from_home;
 use crate::types::{CachedTools, CachedToolsetRecord, ToolSnapshot};
 
 use super::cache::load_cached_toolsets_from_home;
+use super::lua_eval::EVAL_LUA_SCRIPT_NAME;
 use super::tools::{
     ACTIVATE_ADDITIONAL_MCP_NAME, ACTIVATE_TOOL_IN_ADDITIONAL_MCP_NAME,
     CALL_TOOL_IN_ADDITIONAL_MCP_NAME, REQUEST_USER_INPUT_IN_POPUP_NAME,
@@ -301,6 +302,26 @@ fn call_tool_definition_contains_expected_fields() {
 }
 
 #[test]
+fn eval_lua_script_definition_contains_expected_fields() {
+    let catalog = ToolCatalog::new(&[], false);
+    let tool = catalog.get(EVAL_LUA_SCRIPT_NAME).unwrap();
+    let properties = tool
+        .input_schema
+        .get("properties")
+        .and_then(JsonValue::as_object)
+        .unwrap();
+    let required = tool
+        .input_schema
+        .get("required")
+        .and_then(JsonValue::as_array)
+        .unwrap();
+
+    assert!(properties.contains_key("script"));
+    assert!(properties.contains_key("globals"));
+    assert_eq!(required, &vec![json!("script")]);
+}
+
+#[test]
 fn popup_input_tool_definition_contains_questions_schema() {
     let tool = request_user_input_in_popup_definition();
     let properties = tool
@@ -396,6 +417,7 @@ fn proxy_tools_set_explicit_annotation_hints() {
     let activate_tool = catalog.get(ACTIVATE_ADDITIONAL_MCP_NAME).unwrap();
     let activate_tool_detail = catalog.get(ACTIVATE_TOOL_IN_ADDITIONAL_MCP_NAME).unwrap();
     let call_tool = catalog.get(CALL_TOOL_IN_ADDITIONAL_MCP_NAME).unwrap();
+    let eval_lua_script = catalog.get(EVAL_LUA_SCRIPT_NAME).unwrap();
     let popup_tool = catalog.get(REQUEST_USER_INPUT_IN_POPUP_NAME).unwrap();
 
     assert_eq!(
@@ -416,6 +438,14 @@ fn proxy_tools_set_explicit_annotation_hints() {
     );
     assert_eq!(
         call_tool.annotations,
+        Some(
+            rmcp::model::ToolAnnotations::new()
+                .read_only(false)
+                .destructive(false)
+        )
+    );
+    assert_eq!(
+        eval_lua_script.annotations,
         Some(
             rmcp::model::ToolAnnotations::new()
                 .read_only(false)

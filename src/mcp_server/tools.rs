@@ -9,9 +9,12 @@ use crate::input_popup::popup_input_schema;
 use crate::paths::sanitize_name;
 use crate::types::{CachedToolsetRecord, ToolSnapshot};
 
+use super::lua_eval::EVAL_LUA_SCRIPT_NAME;
+
 pub(super) const ACTIVATE_ADDITIONAL_MCP_NAME: &str = "activate_additional_mcp";
 pub(super) const ACTIVATE_TOOL_IN_ADDITIONAL_MCP_NAME: &str = "activate_tool_in_additional_mcp";
 pub(super) const CALL_TOOL_IN_ADDITIONAL_MCP_NAME: &str = "call_tool_in_additional_mcp";
+pub(super) const EVAL_LUA_SCRIPT_DESCRIPTION: &str = "Evaluate a Lua 5.5 script. The script can call any activated MCP tools through the async `call_mcp_tool(mcp_name, tool_name, args)` helper, where `args` must be a Lua table that maps to a JSON object or nil.";
 pub(super) const REQUEST_USER_INPUT_IN_POPUP_NAME: &str = "request_user_input_in_popup";
 pub(super) const STDIO_HOST_REQUIRED_MESSAGE: &str = "`msp mcp` is a stdio MCP server and must be started by an MCP client such as Codex, OpenCode, or Claude Code instead of running directly in a terminal";
 
@@ -38,6 +41,7 @@ pub(super) struct ToolCatalog {
     activate_tool: Tool,
     activate_tool_detail: Tool,
     call_tool_in_additional_mcp: Tool,
+    eval_lua_script: Tool,
     request_user_input_in_popup: Option<Tool>,
 }
 
@@ -49,6 +53,7 @@ impl ToolCatalog {
             call_tool_in_additional_mcp: call_tool_in_additional_mcp_definition(
                 CALL_TOOL_IN_ADDITIONAL_MCP_NAME,
             ),
+            eval_lua_script: eval_lua_script_definition(),
             request_user_input_in_popup: enable_input.then(request_user_input_in_popup_definition),
         }
     }
@@ -58,6 +63,7 @@ impl ToolCatalog {
             self.activate_tool.clone(),
             self.activate_tool_detail.clone(),
             self.call_tool_in_additional_mcp.clone(),
+            self.eval_lua_script.clone(),
         ];
         if let Some(tool) = &self.request_user_input_in_popup {
             tools.push(tool.clone());
@@ -70,6 +76,7 @@ impl ToolCatalog {
             ACTIVATE_ADDITIONAL_MCP_NAME => Some(self.activate_tool.clone()),
             ACTIVATE_TOOL_IN_ADDITIONAL_MCP_NAME => Some(self.activate_tool_detail.clone()),
             CALL_TOOL_IN_ADDITIONAL_MCP_NAME => Some(self.call_tool_in_additional_mcp.clone()),
+            EVAL_LUA_SCRIPT_NAME => Some(self.eval_lua_script.clone()),
             REQUEST_USER_INPUT_IN_POPUP_NAME => self.request_user_input_in_popup.clone(),
             _ => None,
         }
@@ -129,6 +136,29 @@ pub(super) fn request_user_input_in_popup_definition() -> Tool {
         REQUEST_USER_INPUT_IN_POPUP_NAME,
         "Request user input through a popup. When you need to ask the user for input on some question and don't have other tools, use this one.",
         object(popup_input_schema()),
+    )
+    .with_annotations(proxy_tool_annotations(false))
+}
+
+pub(super) fn eval_lua_script_definition() -> Tool {
+    Tool::new(
+        EVAL_LUA_SCRIPT_NAME,
+        EVAL_LUA_SCRIPT_DESCRIPTION,
+        object(json!({
+            "type": "object",
+            "properties": {
+                "script": {
+                    "type": "string",
+                    "description": "The Lua 5.5 source code to execute. Return a value to produce structured output."
+                },
+                "globals": {
+                    "type": "object",
+                    "description": "Optional JSON object whose top-level keys are injected into the Lua global environment before execution."
+                }
+            },
+            "required": ["script"],
+            "additionalProperties": false
+        })),
     )
     .with_annotations(proxy_tool_annotations(false))
 }
