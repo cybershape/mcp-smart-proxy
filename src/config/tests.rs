@@ -1945,6 +1945,30 @@ fn writes_remote_url_server_to_config() {
 }
 
 #[test]
+fn writes_server_description_to_config() {
+    let config_path = unique_test_path("write-server-description.toml");
+    let server_name = add_server_with_config(
+        &config_path,
+        "github",
+        AddServerConfig {
+            command: vec!["npx".to_string(), "demo-server".to_string()],
+            description: Some("Use this for GitHub workflows.".to_string()),
+            ..AddServerConfig::default()
+        },
+    )
+    .unwrap();
+    let config = load_config_table(&config_path).unwrap();
+
+    let saved = config["servers"][&server_name].as_table().unwrap();
+    assert_eq!(
+        saved["description"].as_str(),
+        Some("Use this for GitHub workflows.")
+    );
+
+    fs::remove_file(config_path).unwrap();
+}
+
+#[test]
 fn writes_remote_url_server_with_initial_config_to_config() {
     let config_path = unique_test_path("write-remote-server-with-config.toml");
     let server_name = add_server_with_config(
@@ -2109,6 +2133,7 @@ fn loads_server_config_snapshot() {
             name: "demo".to_string(),
             transport: "stdio".to_string(),
             enabled: false,
+            description: None,
             command: Some("uvx".to_string()),
             args: vec!["demo-server".to_string()],
             url: None,
@@ -2146,6 +2171,30 @@ fn loads_server_config_snapshot_without_transport_field() {
             "Authorization".to_string(),
             "Bearer ${DEMO_TOKEN}".to_string(),
         )])
+    );
+
+    fs::remove_file(config_path).unwrap();
+}
+
+#[test]
+fn loads_server_config_snapshot_description() {
+    let config_path = unique_test_path("load-server-config-description.toml");
+    fs::write(
+        &config_path,
+        r#"
+                [servers.demo]
+                command = "uvx"
+                args = ["demo-server"]
+                description = "Use this for demo workflows."
+            "#,
+    )
+    .unwrap();
+
+    let snapshot = load_server_config(&config_path, "demo").unwrap();
+
+    assert_eq!(
+        snapshot.description.as_deref(),
+        Some("Use this for demo workflows.")
     );
 
     fs::remove_file(config_path).unwrap();
@@ -2199,6 +2248,7 @@ fn updates_server_config_fields() {
             name: "demo".to_string(),
             transport: "stdio".to_string(),
             enabled: true,
+            description: None,
             command: Some("uvx".to_string()),
             args: vec!["new-server".to_string()],
             url: None,
@@ -2749,6 +2799,7 @@ fn finds_server_by_exact_or_sanitized_name() {
                 command: "uvx".to_string(),
                 args: vec!["mcp-server".to_string()],
             },
+            description: None,
             env: BTreeMap::new(),
             env_vars: Vec::new(),
         }
@@ -2783,6 +2834,7 @@ fn infers_remote_transport_without_transport_field() {
                     "Bearer ${DEMO_TOKEN}".to_string(),
                 )]),
             },
+            description: None,
             env: BTreeMap::new(),
             env_vars: Vec::new(),
         }

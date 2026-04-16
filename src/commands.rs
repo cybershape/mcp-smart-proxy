@@ -62,6 +62,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
     match cli.command {
         Some(Command::Add {
             provider,
+            description,
             url,
             enabled,
             headers,
@@ -75,6 +76,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
                 provider,
                 &name,
                 AddCommandArgs {
+                    description,
                     url,
                     enabled,
                     headers,
@@ -411,11 +413,11 @@ async fn run_reload_one_command(
         resolve_default_command_provider(provider_override).map_err(|error| {
             operation_error(
                 "cli.reload.load_provider",
-                "failed to resolve the summary provider before reloading the server",
+                "failed to resolve the provider override before reloading the server",
                 error,
             )
         })?;
-    let reload_result = reload_server_with_provider(config_path, name, &resolved_provider)
+    let reload_result = reload_server_with_provider(config_path, name, resolved_provider.as_ref())
         .await
         .map_err(|error| {
             operation_error(
@@ -471,7 +473,7 @@ async fn run_reload_all_command(
         resolve_default_command_provider(provider_override).map_err(|error| {
             operation_error(
                 "cli.reload.load_provider",
-                "failed to resolve the summary provider before reloading all servers",
+                "failed to resolve the provider override before reloading all servers",
                 error,
             )
         })?;
@@ -479,7 +481,7 @@ async fn run_reload_all_command(
     for server in servers.into_iter().filter(|server| server.enabled) {
         let server_name = server.name;
         let reload_result =
-            reload_server_with_provider(config_path, &server_name, &resolved_provider)
+            reload_server_with_provider(config_path, &server_name, resolved_provider.as_ref())
                 .await
                 .map_err(|error| {
                     operation_error(
@@ -522,7 +524,7 @@ async fn run_mcp_command(
         resolve_default_command_provider(provider_override).map_err(|error| {
             operation_error(
                 "cli.mcp.load_provider",
-                "failed to resolve the summary provider before starting the proxy",
+                "failed to resolve the provider override before starting the proxy",
                 error,
             )
         })?;
@@ -555,7 +557,6 @@ fn format_local_timestamp(epoch_ms: u128) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::provider::missing_provider_error;
     use super::*;
     use crate::paths::{cache_file_path, sibling_lock_path};
     use std::fs;
@@ -613,10 +614,8 @@ mod tests {
     }
 
     #[test]
-    fn rejects_default_command_provider_when_override_is_missing() {
-        let error = resolve_default_command_provider(None).unwrap_err();
-
-        assert_eq!(error.to_string(), missing_provider_error());
+    fn accepts_missing_default_command_provider_when_override_is_missing() {
+        assert!(resolve_default_command_provider(None).unwrap().is_none());
     }
 
     #[test]
@@ -648,9 +647,10 @@ mod tests {
             .unwrap()
             .block_on(run_add_command(
                 &config_path,
-                ProviderName::Codex,
+                Some(ProviderName::Codex),
                 &server_name,
                 AddCommandArgs {
+                    description: None,
                     url: None,
                     enabled: None,
                     headers: Vec::new(),
@@ -675,5 +675,34 @@ mod tests {
 
         fs::remove_file(config_path).unwrap();
         let _ = fs::remove_file(sibling_lock_path(&cache_path));
+    }
+
+    #[test]
+    fn add_rejects_missing_provider_and_description() {
+        let config_path = unique_test_path("add-provider-or-description.toml");
+        let error = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(run_add_command(
+                &config_path,
+                None,
+                "demo",
+                AddCommandArgs {
+                    description: None,
+                    url: None,
+                    enabled: None,
+                    headers: Vec::new(),
+                    env: Vec::new(),
+                    env_vars: Vec::new(),
+                    command: vec!["npx".to_string()],
+                },
+            ))
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("neither `--provider` nor `--description` was provided")
+        );
+        assert!(!config_path.exists());
     }
 }

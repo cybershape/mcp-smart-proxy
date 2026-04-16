@@ -27,7 +27,9 @@ pub enum Command {
     /// Add a managed MCP server to the local config.
     Add {
         #[arg(long, value_enum)]
-        provider: ProviderName,
+        provider: Option<ProviderName>,
+        #[arg(long, value_name = "TEXT")]
+        description: Option<String>,
         #[arg(long, value_name = "URL")]
         url: Option<String>,
         #[arg(long)]
@@ -244,6 +246,7 @@ mod tests {
         match cli.command {
             Some(Command::Add {
                 provider,
+                description,
                 url,
                 enabled,
                 headers,
@@ -252,7 +255,8 @@ mod tests {
                 name,
                 command,
             }) => {
-                assert!(matches!(provider, ProviderName::Codex));
+                assert!(matches!(provider, Some(ProviderName::Codex)));
+                assert_eq!(description, None);
                 assert_eq!(url, None);
                 assert_eq!(enabled, None);
                 assert!(headers.is_empty());
@@ -295,6 +299,7 @@ mod tests {
         match cli.command {
             Some(Command::Add {
                 provider,
+                description,
                 url,
                 enabled,
                 headers,
@@ -303,7 +308,8 @@ mod tests {
                 name,
                 command,
             }) => {
-                assert!(matches!(provider, ProviderName::Codex));
+                assert!(matches!(provider, Some(ProviderName::Codex)));
+                assert_eq!(description, None);
                 assert_eq!(url.as_deref(), Some("https://example.com/mcp"));
                 assert_eq!(enabled, Some(false));
                 assert_eq!(
@@ -320,10 +326,64 @@ mod tests {
     }
 
     #[test]
-    fn rejects_add_without_provider_flag() {
-        let error = Cli::try_parse_from(["msp", "add", "github", "npx"]).unwrap_err();
+    fn parses_add_with_description_without_provider() {
+        let cli = Cli::parse_from([
+            "msp",
+            "add",
+            "--description",
+            "Use this for GitHub workflows.",
+            "github",
+            "npx",
+        ]);
 
-        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+        match cli.command {
+            Some(Command::Add {
+                provider,
+                description,
+                url,
+                enabled,
+                headers,
+                env,
+                env_vars,
+                name,
+                command,
+            }) => {
+                assert!(provider.is_none());
+                assert_eq!(
+                    description.as_deref(),
+                    Some("Use this for GitHub workflows.")
+                );
+                assert_eq!(url, None);
+                assert_eq!(enabled, None);
+                assert!(headers.is_empty());
+                assert!(env.is_empty());
+                assert!(env_vars.is_empty());
+                assert_eq!(name, "github");
+                assert_eq!(command, vec!["npx".to_string()]);
+            }
+            other => panic!("expected add command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn add_accepts_missing_provider_and_description_at_parse_time() {
+        let cli = Cli::parse_from(["msp", "add", "github", "npx"]);
+
+        match cli.command {
+            Some(Command::Add {
+                provider,
+                description,
+                name,
+                command,
+                ..
+            }) => {
+                assert!(provider.is_none());
+                assert_eq!(description, None);
+                assert_eq!(name, "github");
+                assert_eq!(command, vec!["npx".to_string()]);
+            }
+            other => panic!("expected add command, got {other:?}"),
+        }
     }
 
     #[test]

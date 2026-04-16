@@ -23,6 +23,7 @@ pub(crate) struct ParsedServerEntry {
     pub(crate) transport_name: &'static str,
     pub(crate) transport: ParsedServerTransport,
     pub(crate) enabled: bool,
+    pub(crate) description: Option<String>,
     pub(crate) env: BTreeMap<String, String>,
     pub(crate) env_vars: Vec<String>,
 }
@@ -103,6 +104,7 @@ pub(crate) fn server_config_snapshot(
         name: resolved_name.to_string(),
         transport: parsed.transport_name.to_string(),
         enabled: parsed.enabled,
+        description: parsed.description,
         command,
         args,
         url,
@@ -138,9 +140,25 @@ pub(crate) fn parse_server_entry(
         transport_name,
         transport,
         enabled: parse_server_enabled(server, name)?,
+        description: parse_server_description(server, name)?,
         env: parse_toml_string_table(server.get("env"), "env", "server", name)?,
         env_vars: parse_toml_string_array(server.get("env_vars"), "env_vars", "server", name)?,
     })
+}
+
+fn parse_server_description(server: &Table, name: &str) -> Result<Option<String>, Box<dyn Error>> {
+    match server.get("description") {
+        Some(Value::String(description)) => {
+            let trimmed = description.trim();
+            if trimmed.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(trimmed.to_string()))
+            }
+        }
+        Some(_) => Err(format!("server `{name}` has a non-string `description` field").into()),
+        None => Ok(None),
+    }
 }
 
 fn parse_stdio_command(

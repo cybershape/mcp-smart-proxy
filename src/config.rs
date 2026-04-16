@@ -69,6 +69,7 @@ pub struct ImportableServer {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddServerConfig {
     pub command: Vec<String>,
+    pub description: Option<String>,
     pub url: Option<String>,
     pub headers: BTreeMap<String, String>,
     pub enabled: bool,
@@ -80,6 +81,7 @@ impl Default for AddServerConfig {
     fn default() -> Self {
         Self {
             command: Vec::new(),
+            description: None,
             url: None,
             headers: BTreeMap::new(),
             enabled: true,
@@ -123,6 +125,7 @@ pub struct ServerConfigSnapshot {
     pub name: String,
     pub transport: String,
     pub enabled: bool,
+    pub description: Option<String>,
     pub command: Option<String>,
     pub args: Vec<String>,
     pub url: Option<String>,

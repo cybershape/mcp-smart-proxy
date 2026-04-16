@@ -271,7 +271,7 @@ async fn build_import_message(
         ));
     }
 
-    reload_server_with_provider(config_path, server_name, provider)
+    reload_server_with_provider(config_path, server_name, Some(provider))
         .await
         .map(|reload_result| {
             format!(

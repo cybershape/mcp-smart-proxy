@@ -73,6 +73,9 @@ pub(crate) fn print_server_config(
     );
     print_app_event(stage, format!("transport: {}", snapshot.transport));
     print_app_event(stage, format!("enabled: {}", snapshot.enabled));
+    if let Some(description) = &snapshot.description {
+        print_app_event(stage, format!("description: {description}"));
+    }
     if let Some(command) = &snapshot.command {
         print_app_event(stage, format!("command: {command}"));
         if snapshot.args.is_empty() {

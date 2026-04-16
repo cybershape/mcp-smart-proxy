@@ -19,7 +19,7 @@ use crate::types::ModelProviderConfig;
 
 pub async fn serve_cached_toolsets(
     config_path: &Path,
-    provider: ModelProviderConfig,
+    provider: Option<ModelProviderConfig>,
     output_toon: bool,
 ) -> Result<(), Box<dyn Error>> {
     ensure_proxy_stdio_host_connection()?;
@@ -35,15 +35,19 @@ pub async fn serve_cached_toolsets(
                 error,
             )
         })?;
-    let toolsets = daemon::load_toolsets(config_path, None, Some(provider.provider_name()))
-        .await
-        .map_err(|error| {
-            operation_error(
-                "mcp.load_toolsets",
-                "failed to load cached toolsets from the daemon",
-                error,
-            )
-        })?;
+    let toolsets = daemon::load_toolsets(
+        config_path,
+        None,
+        provider.as_ref().map(ModelProviderConfig::provider_name),
+    )
+    .await
+    .map_err(|error| {
+        operation_error(
+            "mcp.load_toolsets",
+            "failed to load cached toolsets from the daemon",
+            error,
+        )
+    })?;
     let service = SmartProxyMcpServer::new(config_path.to_path_buf(), toolsets, output_toon)
         .serve(stdio())
         .await

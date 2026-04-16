@@ -40,7 +40,7 @@ const RELOAD_REMOTE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 pub async fn reload_server_with_provider(
     config_path: &Path,
     name: &str,
-    provider: &ModelProviderConfig,
+    provider: Option<&ModelProviderConfig>,
 ) -> Result<ReloadResult, Box<dyn Error>> {
     reload_server_with_resolved_provider(config_path, name, provider).await
 }
@@ -48,7 +48,7 @@ pub async fn reload_server_with_provider(
 async fn reload_server_with_resolved_provider(
     config_path: &Path,
     name: &str,
-    provider: &ModelProviderConfig,
+    provider: Option<&ModelProviderConfig>,
 ) -> Result<ReloadResult, Box<dyn Error>> {
     let normalized_name = sanitize_name(name);
     let lock_cache_path = if normalized_name.is_empty() {
@@ -103,13 +103,27 @@ async fn reload_server_with_resolved_provider(
             )
         })?;
     let tool_snapshots = tools.iter().map(tool_snapshot).collect::<Vec<_>>();
-    if cached_tools_match(&cache_path, &tool_snapshots).map_err(|error| {
+    let cached = read_cached_tools_if_present(&cache_path).map_err(|error| {
+        operation_error(
+            "reload.read_cache",
+            format!("failed to read cached tools for `{resolved_name}`"),
+            error,
+        )
+    })?;
+    let summary =
+        resolve_summary(&resolved_name, &server, provider, &tools, cached.as_ref()).await?;
+    let tools_match = cached_tools_match(&cache_path, &tool_snapshots).map_err(|error| {
         operation_error(
             "reload.compare_cached_tools",
             format!("failed to compare fetched tools with cached tools for `{resolved_name}`"),
             error,
         )
-    })? {
+    })?;
+    let summary_matches = cached
+        .as_ref()
+        .map(|cached| cached.summary == summary)
+        .unwrap_or(false);
+    if tools_match && summary_matches {
         refresh_cached_tools_timestamp(&cache_path).map_err(|error| {
             operation_error(
                 "reload.refresh_cache_timestamp",
@@ -122,16 +136,6 @@ async fn reload_server_with_resolved_provider(
             updated: false,
         });
     }
-
-    let summary = summarize_tools(provider, &resolved_name, &tools)
-        .await
-        .map_err(|error| {
-            operation_error(
-                "reload.summarize_tools",
-                format!("failed to summarize tools for MCP server `{resolved_name}`"),
-                error,
-            )
-        })?;
     let payload = CachedTools {
         server: resolved_name,
         summary,
@@ -425,6 +429,42 @@ fn read_cached_tools(path: &Path) -> Result<CachedTools, Box<dyn Error>> {
             Box::new(error),
         )
     })
+}
+
+fn read_cached_tools_if_present(path: &Path) -> Result<Option<CachedTools>, Box<dyn Error>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    read_cached_tools(path).map(Some)
+}
+
+async fn resolve_summary(
+    server_name: &str,
+    server: &ConfiguredServer,
+    provider: Option<&ModelProviderConfig>,
+    tools: &[Tool],
+    cached: Option<&CachedTools>,
+) -> Result<String, Box<dyn Error>> {
+    if let Some(description) = server.description.as_ref() {
+        return Ok(description.clone());
+    }
+
+    if let Some(provider) = provider {
+        return summarize_tools(provider, server_name, tools)
+            .await
+            .map_err(|error| {
+                operation_error(
+                    "reload.summarize_tools",
+                    format!("failed to summarize tools for MCP server `{server_name}`"),
+                    error,
+                )
+            });
+    }
+
+    Ok(cached
+        .map(|cached| cached.summary.clone())
+        .unwrap_or_default())
 }
 
 fn refresh_cached_tools_timestamp(path: &Path) -> Result<(), Box<dyn Error>> {

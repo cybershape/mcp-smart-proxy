@@ -21,6 +21,7 @@ pub enum ConfiguredTransport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfiguredServer {
     pub transport: ConfiguredTransport,
+    pub description: Option<String>,
     pub env: BTreeMap<String, String>,
     pub env_vars: Vec<String>,
 }
@@ -70,6 +71,7 @@ impl Default for ConfiguredServer {
                 command: String::new(),
                 args: Vec::new(),
             },
+            description: None,
             env: BTreeMap::new(),
             env_vars: Vec::new(),
         }
@@ -218,6 +220,7 @@ mod tests {
                 command: "demo".to_string(),
                 args: Vec::new(),
             },
+            description: None,
             env: BTreeMap::from([("MSP_TEST_OVERRIDDEN".to_string(), "from-config".to_string())]),
             env_vars: vec![
                 "MSP_TEST_FORWARDED".to_string(),

@@ -67,12 +67,10 @@ pub(crate) fn restore_stage(provider_name: &'static str) -> &'static str {
 
 pub(crate) fn resolve_default_command_provider(
     provider_override: Option<ProviderName>,
-) -> Result<ModelProviderConfig, Box<dyn Error>> {
-    let provider = provider_override.ok_or_else(|| {
-        "missing required `--provider`; supported providers are `codex`, `opencode`, and `claude`"
-            .to_string()
-    })?;
-    load_model_provider_config(provider.as_str())
+) -> Result<Option<ModelProviderConfig>, Box<dyn Error>> {
+    provider_override
+        .map(|provider| load_model_provider_config(provider.as_str()))
+        .transpose()
 }
 
 pub(crate) fn resolve_import_provider(
@@ -138,9 +136,4 @@ fn provider_hooks(provider_name: &'static str) -> ProviderHooks {
         },
         _ => unreachable!(),
     }
-}
-
-#[cfg(test)]
-pub(crate) fn missing_provider_error() -> &'static str {
-    "missing required `--provider`; supported providers are `codex`, `opencode`, and `claude`"
 }

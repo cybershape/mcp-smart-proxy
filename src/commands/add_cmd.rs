@@ -11,6 +11,7 @@ use super::config_cmd::parse_key_value_assignments;
 use super::provider::resolve_default_command_provider;
 
 pub(crate) struct AddCommandArgs {
+    pub(crate) description: Option<String>,
     pub(crate) url: Option<String>,
     pub(crate) enabled: Option<bool>,
     pub(crate) headers: Vec<String>,
@@ -27,9 +28,25 @@ impl AddCommandArgs {
         let env = parse_key_value_assignments(&self.env, "env").map_err(|error| {
             format!("failed to parse `--env` values for server `{server_name}`: {error}")
         })?;
+        let raw_description = self.description;
+        let description = raw_description
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+
+        if raw_description.is_some() && description.is_none() {
+            return Err(
+                format!(
+                    "failed to parse `--description` for server `{server_name}`: description must not be empty"
+                )
+                .into(),
+            );
+        }
 
         Ok(AddServerConfig {
             command: self.command,
+            description,
             url: self.url,
             headers,
             enabled: self.enabled.unwrap_or(true),
@@ -41,21 +58,30 @@ impl AddCommandArgs {
 
 pub(crate) async fn run_add_command(
     config_path: &Path,
-    provider: ProviderName,
+    provider: Option<ProviderName>,
     name: &str,
     args: AddCommandArgs,
 ) -> Result<(), Box<dyn Error>> {
-    let resolved_provider = resolve_default_command_provider(Some(provider)).map_err(|error| {
-        operation_error(
-            "cli.add.load_provider",
-            format!("failed to resolve the summary provider before adding `{name}`"),
-            error,
-        )
-    })?;
     let add_config = args.into_add_server_config(name).map_err(|error| {
         operation_error(
             "cli.add.args",
             format!("failed to parse config values for MCP server `{name}`"),
+            error,
+        )
+    })?;
+    if provider.is_none() && add_config.description.is_none() {
+        return Err(operation_error(
+            "cli.add.provider_or_description",
+            format!(
+                "failed to add MCP server `{name}` because neither `--provider` nor `--description` was provided"
+            ),
+            "provide `--description` for a manual summary or `--provider` to generate one".into(),
+        ));
+    }
+    let resolved_provider = resolve_default_command_provider(provider).map_err(|error| {
+        operation_error(
+            "cli.add.load_provider",
+            format!("failed to resolve the summary provider before adding `{name}`"),
             error,
         )
     })?;
@@ -72,7 +98,7 @@ pub(crate) async fn run_add_command(
     let reload_result = match reload_server_with_provider(
         config_path,
         &server_name,
-        &resolved_provider,
+        resolved_provider.as_ref(),
     )
     .await
     {

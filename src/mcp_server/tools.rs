@@ -89,7 +89,11 @@ pub(super) fn build_activate_tool_description(toolsets: &[CachedToolsetRecord]) 
     }
 
     for toolset in toolsets {
-        lines.push(format!("- {}: {}", toolset.name, toolset.summary));
+        if toolset.summary.trim().is_empty() {
+            lines.push(format!("- {}", toolset.name));
+        } else {
+            lines.push(format!("- {}: {}", toolset.name, toolset.summary));
+        }
     }
 
     lines.join("\n")

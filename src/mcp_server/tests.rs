@@ -32,6 +32,16 @@ fn builds_tool_description_from_cached_summaries() {
 }
 
 #[test]
+fn builds_tool_description_without_empty_summary_suffix() {
+    let toolsets = vec![cached_stdio_toolset("alpha", "", vec![])];
+
+    assert_eq!(
+        build_activate_tool_description(&toolsets),
+        "Use this tool to activate additional MCP servers. The following additional MCP servers are available to be activated when you need some tools to complete the user request:\n\n- alpha"
+    );
+}
+
+#[test]
 fn loads_only_toolsets_with_cache_files() {
     let home = unique_test_home("load-cached-toolsets");
     let config: Table = toml::from_str(

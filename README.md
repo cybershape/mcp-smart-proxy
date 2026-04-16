@@ -18,7 +18,7 @@ The installed binary name is `msp`. Running `msp` without arguments shows the to
 `msp` does three things:
 
 1. Connects to each configured MCP server and caches its tool metadata.
-2. Generates a short summary for each server by using a configured provider: `codex`, `opencode`, or `claude`.
+2. Generates a short summary for each server by using a configured provider: `codex`, `opencode`, or `claude`, or uses a manually configured server description.
 3. Starts a stdio MCP proxy that exposes these proxy tools:
   - `activate_additional_mcps`
   - `activate_tools_in_additional_mcp`
@@ -29,7 +29,7 @@ Agents first inspect the cached server index, optionally inspect one tool defini
 
 The built-in `eval_lua_script` tool runs Lua 5.5 scripts inside the proxy through `mlua`. Scripts can call any configured downstream MCP tool through `call_mcp_tool(mcp_name, tool_name, args)`, where `args` is a Lua table that maps to a JSON object.
 
-When a host starts `msp mcp --provider <provider>`, `msp` auto-starts one background daemon for that config file. That daemon owns downstream MCP communication and periodic self-update checks. Later `msp mcp` processes that use the same config reuse the same Unix socket daemon, even when they pass different `--provider` values. The daemon exits after 1 hour with no requests.
+When a host starts `msp mcp`, `msp` auto-starts one background daemon for that config file. That daemon owns downstream MCP communication and periodic self-update checks. Later `msp mcp` processes that use the same config reuse the same Unix socket daemon, even when they pass different `--provider` values. The daemon exits after 1 hour with no requests.
 
 The default daemon socket lives under `~/.cache/mcp-smart-proxy/` and uses a short hash of the config path so it stays within Unix socket path limits on macOS and Linux.
 
@@ -96,6 +96,12 @@ To add a new server after that:
 msp add --provider codex github npx -y @modelcontextprotocol/server-github
 ```
 
+To add a new server with a manual summary and no AI provider:
+
+```bash
+msp add --description "Use this for GitHub workflows." github npx -y @modelcontextprotocol/server-github
+```
+
 To add a remote server that needs headers up front:
 
 ```bash
@@ -146,7 +152,7 @@ Install `msp` into your host:
 msp install codex
 ```
 
-From that point, the host launches `msp mcp --provider <provider>` as its MCP server entrypoint.
+From that point, the host launches `msp mcp` as its MCP server entrypoint. Pass `--provider <provider>` when you want `msp` to regenerate server summaries with that provider.
 
 The first launch starts the shared daemon automatically. Later launches for the same config reuse it.
 
@@ -166,6 +172,12 @@ msp daemon restart
 msp add --provider codex github npx -y @modelcontextprotocol/server-github
 ```
 
+Or skip AI summarization and persist a manual description instead:
+
+```bash
+msp add --description "Use this for GitHub workflows." github npx -y @modelcontextprotocol/server-github
+```
+
 If the command is a single `http://` or `https://` URL, `msp` stores it as a native remote server:
 
 ```bash
@@ -178,7 +190,7 @@ If the server needs headers, env values, forwarded env vars, or an initial enabl
 msp add --provider codex --url https://example.com/mcp --header Authorization='Bearer ${DEMO_TOKEN}' --env DEMO_REGION=global --env-var DEMO_TOKEN --enabled false remote-demo
 ```
 
-`add` requires `--provider` so `msp` can summarize the fetched tools immediately. The command succeeds only when both config persistence and the initial cache refresh succeed; if cache generation fails, `msp` rolls back the new server entry instead of leaving partial config behind. When you use config flags with `add`, place them before the server name so the trailing command remains untouched. You can still refresh later with `msp reload --provider ...`, or let the shared `msp mcp --provider ...` daemon refresh enabled servers in the background after startup.
+`add` requires either `--provider` or `--description`. With `--provider`, `msp` summarizes the fetched tools immediately. With `--description`, `msp` stores that text in the local config and uses it as the cached server summary without calling any AI provider. If both are passed, the manual description wins. The command succeeds only when both config persistence and the initial cache refresh succeed; if cache generation fails, `msp` rolls back the new server entry instead of leaving partial config behind. When you use config flags with `add`, place them before the server name so the trailing command remains untouched. You can still refresh later with `msp reload`, or let the shared `msp mcp` daemon refresh enabled servers in the background after startup.
 
 ### List servers
 
@@ -239,7 +251,7 @@ Reload every enabled server:
 msp reload --provider codex
 ```
 
-`reload` fetches the downstream tool list, compares it to the cache, and only regenerates the summary when the tool list changed.
+`reload` fetches the downstream tool list, compares it to the cache, and only regenerates the summary when the tool list changed. If you omit `--provider`, `reload` still updates tools and keeps the existing cached summary unless the server has a manual `description` in config.
 
 ### Run Lua automation through the proxy
 
@@ -281,7 +293,7 @@ OAuth metadata is discovered from the remote MCP server at runtime. Credentials 
 
 `msp` does not support Figma's hosted MCP endpoint at `https://mcp.figma.com/mcp`.
 
-The proxy rejects that URL during `msp add --provider ...`, `msp config --url`, and local config load with a clear error instead of letting setup continue into a broken OAuth flow.
+The proxy rejects that URL during `msp add ...`, `msp config --url`, and local config load with a clear error instead of letting setup continue into a broken OAuth flow.
 
 During `msp import ...` and `msp install ... --replace`, Figma hosted MCP entries are skipped for import and left in the original host config instead of being deleted.
 
@@ -427,6 +439,7 @@ Example:
 transport = "stdio"
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-github"]
+description = "Use this for GitHub workflows."
 enabled = true
 env_vars = ["GITHUB_TOKEN"]
 
@@ -457,6 +470,7 @@ Notes:
 - `transport` is optional. If omitted, `msp` infers it from `command` or `url`.
 - `stdio` servers use `command` plus `args`.
 - `remote` servers use a Streamable HTTP `url` plus optional `headers`.
+- `description` is an optional manual summary that overrides AI-generated summaries for that server.
 - `env` stores static variables for the downstream server.
 - `env_vars` lists variables that `msp` forwards from its own environment.
 
@@ -470,7 +484,7 @@ msp mcp --provider codex
 
 If you want downstream tools that return `structuredContent` to expose compact TOON text instead, start the proxy with `--output-toon`. In that mode, `call_tool_in_additional_mcp` converts the downstream structured JSON to TOON text, replaces the text content with that TOON payload, and clears `structuredContent` before returning the result upstream.
 
-When the proxy starts, `msp mcp --provider ...` serves the currently cached toolsets immediately and asks the shared daemon to refresh every enabled configured server in the background with the selected summary provider. The current stdio session keeps using the startup cache snapshot; refreshed cache is used by later sessions or explicit reloads. Background refresh failures are logged by the daemon and do not block MCP readiness.
+When the proxy starts, `msp mcp` serves the currently cached toolsets immediately and asks the shared daemon to refresh every enabled configured server in the background. If you pass `--provider ...`, that refresh also regenerates summaries with the selected provider. If you omit `--provider`, the daemon still refreshes tools and keeps each server's manual `description` or existing cached summary. The current stdio session keeps using the startup cache snapshot; refreshed cache is used by later sessions or explicit reloads. Background refresh failures are logged by the daemon and do not block MCP readiness.
 
 ## Inspect and Call Cached MCP Tools from the Terminal
 

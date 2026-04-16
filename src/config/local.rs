@@ -34,6 +34,7 @@ pub use update::update_server_config;
 struct ServerRecordDraft {
     transport: ServerTransportDraft,
     enabled: bool,
+    description: Option<String>,
     env: BTreeMap<String, String>,
     env_vars: Vec<String>,
 }
@@ -50,6 +51,7 @@ impl ServerRecordDraft {
     fn from_add_config(name: &str, server: AddServerConfig) -> Result<Self, Box<dyn Error>> {
         let AddServerConfig {
             command,
+            description,
             url,
             headers,
             enabled,
@@ -73,12 +75,20 @@ impl ServerRecordDraft {
                     .into());
                 }
 
-                Ok(Self::remote(url, headers, enabled, env, env_vars))
+                Ok(Self::remote(
+                    url,
+                    headers,
+                    enabled,
+                    description,
+                    env,
+                    env_vars,
+                ))
             }
             None if command.len() == 1 && looks_like_url(&command[0]) => Ok(Self::remote(
                 command[0].clone(),
                 headers,
                 enabled,
+                description,
                 env,
                 env_vars,
             )),
@@ -93,6 +103,7 @@ impl ServerRecordDraft {
                 Ok(Self::stdio(
                     StdioServer::from_command(command)?,
                     enabled,
+                    description,
                     env,
                     env_vars,
                 ))
@@ -107,12 +118,14 @@ impl ServerRecordDraft {
                 url.clone(),
                 server.headers.clone(),
                 server.enabled,
+                None,
                 server.env.clone(),
                 server.env_vars.clone(),
             ),
             None => Self::stdio(
                 StdioServer::from_command(server.command.clone())?,
                 server.enabled,
+                None,
                 server.env.clone(),
                 server.env_vars.clone(),
             ),
@@ -124,12 +137,14 @@ impl ServerRecordDraft {
     fn stdio(
         server: StdioServer,
         enabled: bool,
+        description: Option<String>,
         env: BTreeMap<String, String>,
         env_vars: Vec<String>,
     ) -> Self {
         Self {
             transport: ServerTransportDraft::Stdio(server),
             enabled,
+            description,
             env,
             env_vars,
         }
@@ -139,12 +154,14 @@ impl ServerRecordDraft {
         url: String,
         headers: BTreeMap<String, String>,
         enabled: bool,
+        description: Option<String>,
         env: BTreeMap<String, String>,
         env_vars: Vec<String>,
     ) -> Self {
         Self {
             transport: ServerTransportDraft::Remote { url, headers },
             enabled,
+            description,
             env,
             env_vars,
         }
@@ -154,6 +171,7 @@ impl ServerRecordDraft {
         let ServerRecordDraft {
             transport,
             enabled,
+            description,
             env,
             env_vars,
         } = self;
@@ -171,6 +189,9 @@ impl ServerRecordDraft {
         }
         if !enabled {
             server_table.insert("enabled".to_string(), Value::Boolean(false));
+        }
+        if let Some(description) = description {
+            server_table.insert("description".to_string(), Value::String(description));
         }
         upsert_string_table(&mut server_table, "env", env);
         upsert_string_array(&mut server_table, "env_vars", env_vars);
@@ -343,6 +364,7 @@ pub fn configured_server(
         resolved_name,
         ConfiguredServer {
             transport: configured_transport(parsed.transport),
+            description: parsed.description,
             env: parsed.env,
             env_vars: parsed.env_vars,
         },

@@ -158,12 +158,16 @@ fn render_root_help(toolsets: &[CachedToolsetRecord]) -> String {
     output.push_str("MCP servers:\n");
     for toolset in toolsets {
         let summary = normalize_description(&toolset.summary);
-        output.push_str(&format!(
-            "  {:width$}  {}\n",
-            toolset.name,
-            summary,
-            width = width
-        ));
+        if summary.is_empty() {
+            output.push_str(&format!("  {}\n", toolset.name));
+        } else {
+            output.push_str(&format!(
+                "  {:width$}  {}\n",
+                toolset.name,
+                summary,
+                width = width
+            ));
+        }
     }
     output.push_str("\nRun `msp cli <mcp-name>` to list that server's tools.\n");
     output
@@ -177,11 +181,13 @@ fn render_toolset_help(toolset: &CachedToolsetRecord) -> String {
         .max()
         .unwrap_or(0);
     let mut output = format!(
-        "{}\n\nUsage: {} {} <tool-name> [--<parameter> <value>]\n\nTools:\n",
-        normalize_description(&toolset.summary),
-        CLI_USAGE_HELP_PREFIX,
-        toolset.name
+        "Usage: {} {} <tool-name> [--<parameter> <value>]\n\nTools:\n",
+        CLI_USAGE_HELP_PREFIX, toolset.name
     );
+    let summary = normalize_description(&toolset.summary);
+    if !summary.is_empty() {
+        output = format!("{}\n\n{}", summary, output);
+    }
 
     if toolset.tools.is_empty() {
         output.push_str("  none  No cached tools available.\n");
@@ -967,6 +973,18 @@ mod tests {
     }
 
     #[test]
+    fn renders_root_help_without_empty_summary_placeholder() {
+        let mut toolsets = sample_toolsets();
+        toolsets[0].summary.clear();
+
+        let help = render_root_help(&toolsets);
+
+        assert!(help.contains("MCP servers:"));
+        assert!(help.contains("  alpha\n"));
+        assert!(!help.contains("alpha  \n"));
+    }
+
+    #[test]
     fn renders_toolset_help_with_truncated_tool_descriptions() {
         let mut toolsets = sample_toolsets();
         toolsets[0].tools[0].description = Some(
@@ -980,6 +998,16 @@ mod tests {
         assert!(help.contains(
             "search  12345678901234567890123456789012345678901234567890123456789012345678901234567..."
         ));
+    }
+
+    #[test]
+    fn renders_toolset_help_without_leading_blank_summary_block() {
+        let mut toolsets = sample_toolsets();
+        toolsets[0].summary.clear();
+
+        let help = render_toolset_help(&toolsets[0]);
+
+        assert!(help.starts_with("Usage: msp cli [--output-toon] alpha <tool-name>"));
     }
 
     #[test]

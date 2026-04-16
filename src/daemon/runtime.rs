@@ -205,18 +205,16 @@ async fn handle_connection_inner(
                 .map_err(|error| error.to_string())
             {
                 Ok(toolsets) => {
-                    if let Some(provider) = provider {
-                        state
-                            .refresh_toolsets
-                            .spawn(&provider, state.logger.clone(), {
-                                let config_path = state.config_path.clone();
-                                let provider = provider.clone();
-                                move || async move {
-                                    refresh_toolsets_for_provider(&config_path, &provider).await
-                                }
-                            })
-                            .await;
-                    }
+                    state
+                        .refresh_toolsets
+                        .spawn(provider.clone(), state.logger.clone(), {
+                            let config_path = state.config_path.clone();
+                            move || async move {
+                                refresh_toolsets_for_provider(&config_path, provider.as_deref())
+                                    .await
+                            }
+                        })
+                        .await;
                     DaemonResponse::Toolsets { toolsets }
                 }
                 Err(message) => DaemonResponse::Error { message },
@@ -264,12 +262,12 @@ fn load_cached_toolsets_snapshot(
 
 async fn refresh_toolsets_for_provider(
     config_path: &Path,
-    provider_name: &str,
+    provider_name: Option<&str>,
 ) -> Result<(), Box<dyn Error>> {
-    let provider = load_model_provider_config(provider_name)?;
+    let provider = provider_name.map(load_model_provider_config).transpose()?;
     let servers = list_servers(config_path)?;
     for server in servers.into_iter().filter(|server| server.enabled) {
-        reload_server_with_provider(config_path, &server.name, &provider).await?;
+        reload_server_with_provider(config_path, &server.name, provider.as_ref()).await?;
     }
 
     Ok(())
@@ -371,12 +369,12 @@ struct RefreshToolsetsCoordinator {
 }
 
 impl RefreshToolsetsCoordinator {
-    async fn spawn<F, Fut>(&self, provider_name: &str, logger: DaemonLogger, operation: F)
+    async fn spawn<F, Fut>(&self, provider_name: Option<String>, logger: DaemonLogger, operation: F)
     where
         F: FnOnce() -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), Box<dyn Error>>> + Send + 'static,
     {
-        let provider_name = provider_name.to_string();
+        let provider_name = provider_name.unwrap_or_else(|| "<none>".to_string());
         {
             let mut slots = self.slots.lock().await;
             if !slots.insert(provider_name.clone()) {
@@ -494,16 +492,20 @@ mod tests {
         let first_runs = Arc::clone(&runs);
         let first_release = Arc::clone(&release);
         coordinator
-            .spawn("codex", logger.clone(), move || async move {
-                first_runs.fetch_add(1, Ordering::SeqCst);
-                first_release.notified().await;
-                Ok(())
-            })
+            .spawn(
+                Some("codex".to_string()),
+                logger.clone(),
+                move || async move {
+                    first_runs.fetch_add(1, Ordering::SeqCst);
+                    first_release.notified().await;
+                    Ok(())
+                },
+            )
             .await;
 
         let second_runs = Arc::clone(&runs);
         coordinator
-            .spawn("codex", logger, move || async move {
+            .spawn(Some("codex".to_string()), logger, move || async move {
                 second_runs.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             })
@@ -523,16 +525,20 @@ mod tests {
 
         let first_runs = Arc::clone(&runs);
         coordinator
-            .spawn("codex", logger.clone(), move || async move {
-                first_runs.fetch_add(1, Ordering::SeqCst);
-                Err("refresh failed".into())
-            })
+            .spawn(
+                Some("codex".to_string()),
+                logger.clone(),
+                move || async move {
+                    first_runs.fetch_add(1, Ordering::SeqCst);
+                    Err("refresh failed".into())
+                },
+            )
             .await;
         sleep(Duration::from_millis(50)).await;
 
         let second_runs = Arc::clone(&runs);
         coordinator
-            .spawn("codex", logger, move || async move {
+            .spawn(Some("codex".to_string()), logger, move || async move {
                 second_runs.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             })
@@ -540,6 +546,37 @@ mod tests {
         sleep(Duration::from_millis(50)).await;
 
         assert_eq!(runs.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn refresh_toolsets_coordinator_deduplicates_missing_provider_refreshes() {
+        let coordinator = RefreshToolsetsCoordinator::default();
+        let runs = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(tokio::sync::Notify::new());
+        let logger = test_logger("refresh-none-dedup");
+
+        let first_runs = Arc::clone(&runs);
+        let first_release = Arc::clone(&release);
+        coordinator
+            .spawn(None, logger.clone(), move || async move {
+                first_runs.fetch_add(1, Ordering::SeqCst);
+                first_release.notified().await;
+                Ok(())
+            })
+            .await;
+
+        let second_runs = Arc::clone(&runs);
+        coordinator
+            .spawn(None, logger, move || async move {
+                second_runs.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .await;
+
+        sleep(Duration::from_millis(50)).await;
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        release.notify_waiters();
+        sleep(Duration::from_millis(50)).await;
     }
 
     fn test_logger(label: &str) -> DaemonLogger {
